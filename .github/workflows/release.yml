@@ -1,0 +1,88 @@
+name: Release
+
+# Tags and publishes a GitHub Release when a PR merges into main with
+# one of the release:major / release:minor / release:patch labels.
+# No matching label -> no release; this is opt-in per PR, not automatic
+# on every merge.
+#
+# Version is computed from the latest existing git tag (defaulting to
+# v0.0.0 if none exist) plus the label's semver bump. A tag with major
+# version 0 is published as a GitHub prerelease — standard semver
+# meaning (0.x.y = not yet stable) rather than a flag to remember to
+# flip; it stops automatically once a release:major PR bumps to
+# v1.0.0.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >
+      github.event.pull_request.merged == true &&
+      (
+        contains(github.event.pull_request.labels.*.name, 'release:major') ||
+        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
+        contains(github.event.pull_request.labels.*.name, 'release:patch')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Determine bump type
+        id: bump
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}" == "true" ]]; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}" == "true" ]]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next version
+        id: version
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          latest="${latest:-v0.0.0}"
+          latest="${latest#v}"
+          IFS='.' read -r major minor patch <<< "$latest"
+
+          case "${{ steps.bump.outputs.type }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+
+          next="v${major}.${minor}.${patch}"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+          if [[ "$major" == "0" ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.version.outputs.next }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEXT" -m "$NEXT"
+          git push origin "$NEXT"
+
+          if [[ "$PRERELEASE" == "true" ]]; then
+            gh release create "$NEXT" --title "$NEXT" --generate-notes --prerelease
+          else
+            gh release create "$NEXT" --title "$NEXT" --generate-notes
+          fi

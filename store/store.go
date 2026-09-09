@@ -1,0 +1,80 @@
+// Package store ties the vault envelope (package vault) and the entry
+// schema (package entry) together into the operations a command needs:
+// create a new vault, open an existing one, and save changes back.
+package store
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/FormlessEvoker/passgo/entry"
+	"github.com/FormlessEvoker/passgo/vault"
+)
+
+// Store is an open vault: its decrypted entries, plus enough state to
+// write changes back to the same file without re-deriving the key.
+type Store struct {
+	Payload entry.Payload
+
+	path   string
+	opened *vault.Opened
+}
+
+// Init creates a new, empty vault at path. It fails if a file already
+// exists there — overwriting is never implicit, per SPECIFICATION.md §6.
+func Init(path, password string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	data, err := entry.Marshal(entry.New())
+	if err != nil {
+		return err
+	}
+	fileBytes, err := vault.Create(password, data)
+	if err != nil {
+		return err
+	}
+	return vault.WriteAtomic(path, fileBytes)
+}
+
+// Open decrypts the vault at path with password and parses its entries.
+func Open(path, password string) (*Store, error) {
+	fileBytes, err := vault.ReadFile(path, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+	o, err := vault.Open(fileBytes, password)
+	if err != nil {
+		return nil, err
+	}
+	p, err := entry.Unmarshal(o.Plaintext)
+	if err != nil {
+		o.Close()
+		return nil, err
+	}
+	return &Store{Payload: p, path: path, opened: o}, nil
+}
+
+// Close zeroes the key material held by s. Callers should defer it
+// after a successful Open.
+func (s *Store) Close() {
+	s.opened.Close()
+}
+
+// Save re-encrypts s.Payload and atomically writes it back to the
+// vault file, under the same key and KDF parameters it was opened
+// with — no re-derivation of the key from the master password.
+func (s *Store) Save() error {
+	data, err := entry.Marshal(s.Payload)
+	if err != nil {
+		return err
+	}
+	fileBytes, err := s.opened.Save(data)
+	if err != nil {
+		return err
+	}
+	return vault.WriteAtomic(s.path, fileBytes)
+}

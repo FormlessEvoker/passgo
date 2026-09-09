@@ -8,11 +8,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 
 	"github.com/FormlessEvoker/passgo/vault"
 )
-
-const version = "0.1.0-dev"
 
 const usage = `passgo — a small, local-first password manager
 
@@ -49,7 +48,7 @@ func Run(args []string) int {
 		printUsage(os.Stdout)
 		return ExitOK
 	case "version", "--version":
-		fmt.Println("passgo", version)
+		fmt.Println("passgo", versionString())
 		return ExitOK
 	}
 
@@ -95,4 +94,19 @@ func extractGlobalFlags(args []string) (vaultPath string, rest []string, err err
 
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, usage)
+}
+
+// versionString reports the module version Go resolved this binary
+// against — e.g. "v0.2.0" for `go install .../passgo@v0.2.0` — read
+// from the build info Go embeds automatically. No ldflags wiring
+// needed at build time. A local `go build` inside the repo instead
+// gets Go's git-derived pseudo-version (commit hash, "+dirty" if the
+// working tree had uncommitted changes), which is more useful for a
+// dev build than a flat "dev" string would be.
+func versionString() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.Main.Version == "" {
+		return "dev"
+	}
+	return info.Main.Version
 }

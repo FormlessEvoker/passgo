@@ -81,6 +81,15 @@ func TestOpenRejectsTruncatedFile(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNonZeroReservedByte(t *testing.T) {
+	h := Header{Version: FormatV1, KDFID: KDFArgon2id, Params: crypto.DefaultParams}
+	b := h.MarshalBinary()
+	b[17] = 0x01 // reserved, spec requires 0x00
+	if _, err := ParseHeader(b); err == nil {
+		t.Error("ParseHeader accepted a nonzero reserved byte")
+	}
+}
+
 func TestOpenRejectsOutOfBoundsParams(t *testing.T) {
 	h := Header{
 		Version: FormatV1,
@@ -219,6 +228,46 @@ func TestWriteAtomicRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteAtomicNoOverwriteRefusesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+
+	if err := WriteAtomicNoOverwrite(path, []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" {
+		t.Errorf("got %q, want %q", got, "first")
+	}
+
+	err = WriteAtomicNoOverwrite(path, []byte("second"))
+	if !os.IsExist(err) {
+		t.Errorf("WriteAtomicNoOverwrite over an existing file: err = %v, want an os.IsExist error", err)
+	}
+	// The original content must be untouched.
+	got, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first" {
+		t.Errorf("content changed after a refused overwrite: got %q, want %q", got, "first")
+	}
+
+	// No leftover temp files, whichever branch ran.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".tmp" {
+			t.Errorf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestReadFileWarnsOnLoosePermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.pgv")
@@ -232,6 +281,25 @@ func TestReadFileWarnsOnLoosePermissions(t *testing.T) {
 	}
 	if warnings.Len() == 0 {
 		t.Error("expected a warning for a group/world-readable vault file")
+	}
+}
+
+func TestReadFileNoWarningWhenNotReadableByGroupOrOther(t *testing.T) {
+	// Group-executable but not group-readable: the old &0o077 mask
+	// warned here even though the file isn't "readable" by group/other,
+	// which is what the warning message claims.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+	if err := os.WriteFile(path, []byte("data"), 0o610); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings bytes.Buffer
+	if _, err := ReadFile(path, &warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warning for a non-readable-by-group mode: %s", warnings.String())
 	}
 }
 

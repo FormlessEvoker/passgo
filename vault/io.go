@@ -20,14 +20,15 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if info.Mode().Perm()&0o044 != 0 {
 		fmt.Fprintf(warn, "warning: %s is readable by group or other; consider chmod 600\n", path)
 	}
 	return os.ReadFile(path)
 }
 
-// WriteAtomic writes data to path without ever truncating an existing
-// vault in place, per SPECIFICATION.md §3.4:
+// WriteAtomic writes data to path, overwriting an existing vault only
+// via an atomic rename — never truncating it in place — per
+// SPECIFICATION.md §3.4:
 //
 //  1. write to a temp file in the same directory (same filesystem, so
 //     the rename is atomic), mode 0600;
@@ -40,36 +41,15 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 // (if any) is left untouched.
 func WriteAtomic(path string, data []byte) (err error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return err
-	}
-
-	tmp, err := os.CreateTemp(dir, ".vault-*.tmp")
+	tmpPath, err := writeTemp(dir, data)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
 	defer func() {
 		if err != nil {
 			os.Remove(tmpPath)
 		}
 	}()
-
-	if err = tmp.Chmod(vaultMode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err = tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
 
 	if _, statErr := os.Stat(path); statErr == nil {
 		if err = copyFile(path, path+".bak"); err != nil {
@@ -80,12 +60,74 @@ func WriteAtomic(path string, data []byte) (err error) {
 	if err = os.Rename(tmpPath, path); err != nil {
 		return err
 	}
+	return fsyncDir(dir)
+}
 
-	if d, derr := os.Open(dir); derr == nil {
-		d.Sync()
-		d.Close()
+// WriteAtomicNoOverwrite is WriteAtomic's counterpart for `init`: it
+// fails rather than replacing an existing vault. Unlike a
+// stat-then-write check, os.Link is atomic — it fails with
+// os.ErrExist if path already exists, so there is no window between
+// checking and creating for a concurrent writer to land in.
+func WriteAtomicNoOverwrite(path string, data []byte) (err error) {
+	dir := filepath.Dir(path)
+	tmpPath, err := writeTemp(dir, data)
+	if err != nil {
+		return err
 	}
-	return nil
+	defer os.Remove(tmpPath)
+
+	if err = os.Link(tmpPath, path); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
+}
+
+// writeTemp creates the vault's containing directory if needed and
+// writes data to a fresh, fsynced temp file inside it (mode 0600),
+// returning the temp file's path.
+func writeTemp(dir string, data []byte) (string, error) {
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return "", err
+	}
+
+	tmp, err := os.CreateTemp(dir, ".vault-*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+
+	if err := tmp.Chmod(vaultMode); err != nil {
+		tmp.Close()
+		return tmpPath, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return tmpPath, err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return tmpPath, err
+	}
+	if err := tmp.Close(); err != nil {
+		return tmpPath, err
+	}
+	return tmpPath, nil
+}
+
+// fsyncDir opens dir and fsyncs it, so a preceding rename or link
+// inside it is durable across a crash — the final step of §3.4.
+// Errors are returned rather than ignored: if this fails, the write
+// may not survive a crash, and callers need to know that.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 func copyFile(src, dst string) error {

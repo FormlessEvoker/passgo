@@ -42,22 +42,25 @@ Requires Go 1.26 or newer.
 passgo init                                  # create the vault, set a master password
 passgo add github.com -u me@example.com -g   # -g generates and stores a strong password
 passgo get github.com | pbcopy               # copy the password, print nothing
-passgo ls                                    # list what is stored — never any secrets
 ```
+
+`ls`, `show`, `edit`, `rm`, `gen`, and `passwd` are designed (see
+[SPECIFICATION.md](SPECIFICATION.md)) but not implemented yet — see the table
+below.
 
 ## Commands
 
-| Command | Description |
-| --- | --- |
-| `passgo init` | Create a new vault and set the master password. |
-| `passgo add <site>` | Add an entry. `-g` generates the password for you. |
-| `passgo get <query>` | Print the password for a single entry, and nothing else. |
-| `passgo show <query>` | Show an entry's details with the password redacted. |
-| `passgo ls [query]` | List entries. Never prints secrets. |
-| `passgo edit <query>` | Change fields on an existing entry. |
-| `passgo rm <query>` | Delete an entry. |
-| `passgo gen [length]` | Generate a password without storing it. |
-| `passgo passwd` | Change the master password and re-encrypt the vault. |
+| Command | Description | Status |
+| --- | --- | --- |
+| `passgo init` | Create a new vault and set the master password. | ✅ |
+| `passgo add <name>` | Add an entry. `-g` generates the password for you. | ✅ |
+| `passgo get <query>` | Print the password for a single entry, and nothing else. | ✅ |
+| `passgo show <query>` | Show an entry's details with the password redacted. | not yet |
+| `passgo ls [query]` | List entries. Never prints secrets. | not yet |
+| `passgo edit <query>` | Change fields on an existing entry. | not yet |
+| `passgo rm <query>` | Delete an entry. | not yet |
+| `passgo gen [length]` | Generate a password without storing it. | not yet |
+| `passgo passwd` | Change the master password and re-encrypt the vault. | not yet |
 
 `get` is deliberately the only command that will put a secret on stdout, and it
 prints the password alone with no label or newline decoration, so it pipes

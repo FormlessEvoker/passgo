@@ -89,6 +89,9 @@ func ParseHeader(b []byte) (Header, error) {
 	if err := h.Params.Validate(); err != nil {
 		return Header{}, err
 	}
+	if b[17] != 0x00 {
+		return Header{}, fmt.Errorf("%w: reserved byte must be 0x00, got 0x%02x", ErrUnsupportedFormat, b[17])
+	}
 	copy(h.Salt[:], b[18:34])
 	copy(h.Nonce[:], b[34:46])
 	return h, nil

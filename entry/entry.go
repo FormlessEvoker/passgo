@@ -5,6 +5,7 @@ package entry
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 )
@@ -60,11 +61,17 @@ func Marshal(p Payload) ([]byte, error) {
 	return json.Marshal(p)
 }
 
-// Unmarshal decodes minified JSON into a Payload.
+// Unmarshal decodes minified JSON into a Payload. It rejects a payload
+// whose version doesn't match PayloadVersion, rather than silently
+// accepting it and risking a later Save re-encoding it through the
+// current schema and dropping fields a newer version added.
 func Unmarshal(data []byte) (Payload, error) {
 	var p Payload
 	if err := json.Unmarshal(data, &p); err != nil {
 		return Payload{}, err
+	}
+	if p.Version != PayloadVersion {
+		return Payload{}, fmt.Errorf("entry: unsupported payload version %d (want %d)", p.Version, PayloadVersion)
 	}
 	return p, nil
 }

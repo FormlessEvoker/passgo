@@ -22,6 +22,12 @@ type Store struct {
 
 // Init creates a new, empty vault at path. It fails if a file already
 // exists there — overwriting is never implicit, per SPECIFICATION.md §6.
+//
+// The real no-overwrite guarantee comes from
+// vault.WriteAtomicNoOverwrite, which fails atomically (via os.Link)
+// rather than racing a stat check against a concurrent writer. The
+// stat here is just a fast path so a doomed `init` fails before
+// paying for a master-password prompt and an Argon2id derivation.
 func Init(path, password string) error {
 	if _, err := os.Stat(path); err == nil {
 		return fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
@@ -37,7 +43,13 @@ func Init(path, password string) error {
 	if err != nil {
 		return err
 	}
-	return vault.WriteAtomic(path, fileBytes)
+	if err := vault.WriteAtomicNoOverwrite(path, fileBytes); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
+		}
+		return err
+	}
+	return nil
 }
 
 // Open decrypts the vault at path with password and parses its entries.

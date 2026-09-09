@@ -68,6 +68,15 @@ func TestMarshalSortsByNameThenUsername(t *testing.T) {
 	}
 }
 
+func TestUnmarshalRejectsWrongVersion(t *testing.T) {
+	if _, err := Unmarshal([]byte(`{"version":2,"entries":[]}`)); err == nil {
+		t.Error("Unmarshal accepted a payload with an unsupported version")
+	}
+	if _, err := Unmarshal([]byte(`{"entries":[]}`)); err == nil {
+		t.Error("Unmarshal accepted a payload with no version field (defaults to 0)")
+	}
+}
+
 func TestOptionalFieldsOmittedWhenEmpty(t *testing.T) {
 	p := New()
 	p.Entries = append(p.Entries, Entry{Name: "x", Secret: "y", Updated: Now()})

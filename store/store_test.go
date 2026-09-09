@@ -71,6 +71,48 @@ func TestOpenWrongPasswordFails(t *testing.T) {
 	}
 }
 
+func TestSaveDetectsConcurrentModification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s1, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	// s1 saves first...
+	s1.Payload.Entries = append(s1.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
+	if err := s1.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	// ...so s2's Save, still based on the original file, must be
+	// refused rather than silently discarding s1's entry.
+	s2.Payload.Entries = append(s2.Payload.Entries, entry.Entry{Name: "b.com", Secret: "2", Updated: entry.Now()})
+	err = s2.Save()
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("s2.Save() after a concurrent write: err = %v, want ErrConflict", err)
+	}
+
+	// s1's write must have survived untouched.
+	s3, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s3.Close()
+	if len(s3.Payload.Entries) != 1 || s3.Payload.Entries[0].Name != "a.com" {
+		t.Errorf("vault contents after a refused conflicting save: %+v", s3.Payload.Entries)
+	}
+}
+
 func TestSaveSortsAndPersistsEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
 	if err := Init(path, "pw"); err != nil {

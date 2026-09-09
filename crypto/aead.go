@@ -12,6 +12,10 @@ import (
 const (
 	NonceSize = 12
 	SaltSize  = 16
+	// TagSize is the AES-GCM authentication tag length. Any ciphertext
+	// shorter than this cannot possibly be valid, regardless of key —
+	// worth checking before spending an Argon2id derivation on it.
+	TagSize = 16
 )
 
 // ErrAuthFailed means GCM tag verification failed: either the password

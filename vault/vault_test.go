@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,6 +88,14 @@ func TestOpenRejectsNonZeroReservedByte(t *testing.T) {
 	b[17] = 0x01 // reserved, spec requires 0x00
 	if _, err := ParseHeader(b); err == nil {
 		t.Error("ParseHeader accepted a nonzero reserved byte")
+	}
+}
+
+func TestOpenRejectsCiphertextTooShortForTag(t *testing.T) {
+	h := Header{Version: FormatV1, KDFID: KDFArgon2id, Params: crypto.DefaultParams}
+	fileBytes := append(h.MarshalBinary(), make([]byte, crypto.TagSize-1)...) // one byte short of a full tag
+	if _, err := Open(fileBytes, "correct horse"); !errors.Is(err, ErrCiphertextTooShort) {
+		t.Errorf("Open() on a too-short ciphertext: err = %v, want ErrCiphertextTooShort", err)
 	}
 }
 

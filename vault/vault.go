@@ -46,6 +46,9 @@ func Open(fileBytes []byte, password string) (*Opened, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(fileBytes)-HeaderSize < crypto.TagSize {
+		return nil, ErrCiphertextTooShort
+	}
 	key := crypto.DeriveKey(password, h.Salt[:], h.Params)
 
 	plaintext, err := crypto.Open(key, h.Nonce[:], fileBytes[:HeaderSize], fileBytes[HeaderSize:])

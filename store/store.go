@@ -4,6 +4,8 @@
 package store
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 
@@ -11,13 +13,28 @@ import (
 	"github.com/FormlessEvoker/passgo/vault"
 )
 
+// ErrConflict means the vault file on disk changed since this Store
+// was opened — most likely a second passgo process ran an Open/Save
+// of its own in between. Save refuses to overwrite it: a lost-update
+// race (both processes read, both write, one silently disappears) is
+// worse than making the second Save fail and ask the caller to retry
+// against the current vault.
+//
+// This is an optimistic check, not a lock: it catches the case where
+// the other write finished before this Save runs, not a write that
+// lands in the middle of it. Good enough for the everyday "two
+// terminals" case this is aimed at, not a substitute for real
+// coordination if that's ever needed.
+var ErrConflict = errors.New("store: vault was modified since it was opened; re-run to see the latest changes")
+
 // Store is an open vault: its decrypted entries, plus enough state to
 // write changes back to the same file without re-deriving the key.
 type Store struct {
 	Payload entry.Payload
 
-	path   string
-	opened *vault.Opened
+	path     string
+	opened   *vault.Opened
+	rawBytes []byte // the file's on-disk contents as of Open/last Save
 }
 
 // Init creates a new, empty vault at path. It fails if a file already
@@ -67,7 +84,7 @@ func Open(path, password string) (*Store, error) {
 		o.Close()
 		return nil, err
 	}
-	return &Store{Payload: p, path: path, opened: o}, nil
+	return &Store{Payload: p, path: path, opened: o, rawBytes: fileBytes}, nil
 }
 
 // Close zeroes the key material held by s. Callers should defer it
@@ -79,7 +96,19 @@ func (s *Store) Close() {
 // Save re-encrypts s.Payload and atomically writes it back to the
 // vault file, under the same key and KDF parameters it was opened
 // with — no re-derivation of the key from the master password.
+//
+// It first checks that the file on disk still matches what this Store
+// read at Open (or the last successful Save), and refuses with
+// ErrConflict if not — see ErrConflict's doc comment.
 func (s *Store) Save() error {
+	current, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, s.rawBytes) {
+		return ErrConflict
+	}
+
 	data, err := entry.Marshal(s.Payload)
 	if err != nil {
 		return err
@@ -88,5 +117,9 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return vault.WriteAtomic(s.path, fileBytes)
+	if err := vault.WriteAtomic(s.path, fileBytes); err != nil {
+		return err
+	}
+	s.rawBytes = fileBytes
+	return nil
 }

@@ -51,10 +51,18 @@ func WriteAtomic(path string, data []byte) (err error) {
 		}
 	}()
 
-	if _, statErr := os.Stat(path); statErr == nil {
+	switch _, statErr := os.Stat(path); {
+	case statErr == nil:
 		if err = copyFile(path, path+".bak"); err != nil {
 			return err
 		}
+	case os.IsNotExist(statErr):
+		// No existing vault, so nothing to back up.
+	default:
+		// A permission error or similar: not knowing whether a vault
+		// exists here means not knowing whether a backup is owed, so
+		// fail loudly rather than silently skipping it.
+		return statErr
 	}
 
 	if err = os.Rename(tmpPath, path); err != nil {

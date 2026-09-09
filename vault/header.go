@@ -28,10 +28,11 @@ const (
 )
 
 var (
-	ErrBadMagic          = errors.New("vault: not a passgo vault file")
-	ErrUnsupportedFormat = errors.New("vault: unsupported format version")
-	ErrUnsupportedKDF    = errors.New("vault: unsupported KDF identifier")
-	ErrTruncated         = errors.New("vault: file too short to be a valid vault")
+	ErrBadMagic           = errors.New("vault: not a passgo vault file")
+	ErrUnsupportedFormat  = errors.New("vault: unsupported format version")
+	ErrUnsupportedKDF     = errors.New("vault: unsupported KDF identifier")
+	ErrTruncated          = errors.New("vault: file too short to be a valid vault")
+	ErrCiphertextTooShort = errors.New("vault: ciphertext too short to contain a valid authentication tag")
 )
 
 // Header is the plaintext prefix of a vault file. Its encoded form is

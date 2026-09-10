@@ -289,6 +289,75 @@ func TestMasterPasswordFileOverridesEnvVar(t *testing.T) {
 	}
 }
 
+func TestLsListsEverythingWithNoQuery(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "github.com") || !strings.Contains(out, "gitlab.com") {
+		t.Errorf("ls output missing an entry: %q", out)
+	}
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
+		t.Errorf("ls output missing a username: %q", out)
+	}
+}
+
+func TestLsFiltersByQuery(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls", "github"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "github.com") {
+		t.Errorf("ls github output missing github.com: %q", out)
+	}
+	if strings.Contains(out, "gitlab.com") {
+		t.Errorf("ls github output should not include gitlab.com: %q", out)
+	}
+}
+
+func TestLsNoMatchPrintsNothingAndSucceeds(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls", "nope"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if out != "" {
+		t.Errorf("ls with no match: output = %q, want empty", out)
+	}
+}
+
+func TestLsTooManyArgsIsUsageError(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	if code := Run([]string{"ls", "one", "two"}); code != ExitUsage {
+		t.Errorf("ls with two args: exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
 func TestReadPasswordFileWarnsOnLoosePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "master.txt")
 	if err := os.WriteFile(path, []byte("secret\n"), 0o644); err != nil {

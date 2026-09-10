@@ -56,7 +56,7 @@ below.
 | `passgo add <name>` | Add an entry. `-g` generates the password for you. | ✅ |
 | `passgo get <query>` | Print the password for a single entry, and nothing else. | ✅ |
 | `passgo show <query>` | Show an entry's details with the password redacted. | not yet |
-| `passgo ls [query]` | List entries. Never prints secrets. | not yet |
+| `passgo ls [query]` | List entries. Never prints secrets. | ✅ |
 | `passgo edit <query>` | Change fields on an existing entry. | not yet |
 | `passgo rm <query>` | Delete an entry. | not yet |
 | `passgo gen [length]` | Generate a password without storing it. | not yet |

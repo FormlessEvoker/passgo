@@ -289,6 +289,170 @@ func TestMasterPasswordFileOverridesEnvVar(t *testing.T) {
 	}
 }
 
+func TestLsListsEverythingWithNoQuery(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "github.com") || !strings.Contains(out, "gitlab.com") {
+		t.Errorf("ls output missing an entry: %q", out)
+	}
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "bob") {
+		t.Errorf("ls output missing a username: %q", out)
+	}
+}
+
+// seedLsFixture creates three entries spanning distinct names,
+// usernames, and notes, for exercising every dimension resolve() can
+// match a query on.
+func seedLsFixture(t *testing.T) {
+	t.Helper()
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-n", "personal account", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob-work", "-n", "work ci token", "-p"})
+	withStdin(t, "c\n")
+	Run([]string{"add", "example.org", "-u", "carol", "-n", "recovery info", "-p"})
+}
+
+func TestLsQueryDimensions(t *testing.T) {
+	cases := []struct {
+		name    string
+		query   string
+		want    []string // entry names expected in the output
+		exclude []string // entry names that must not appear
+	}{
+		{"full name", "github.com", []string{"github.com"}, []string{"gitlab.com", "example.org"}},
+		{"partial name", "git", []string{"github.com", "gitlab.com"}, []string{"example.org"}},
+		{"full username", "alice", []string{"github.com"}, []string{"gitlab.com", "example.org"}},
+		{"partial username", "work", []string{"gitlab.com"}, []string{"github.com", "example.org"}},
+		{"partial notes", "recovery", []string{"example.org"}, []string{"github.com", "gitlab.com"}},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			withTempVault(t)
+			seedLsFixture(t)
+
+			out, code := captureStdout(t, func() int {
+				return Run([]string{"ls", c.query})
+			})
+			if code != ExitOK {
+				t.Fatalf("ls %q exit code = %d, want %d", c.query, code, ExitOK)
+			}
+			for _, name := range c.want {
+				if !strings.Contains(out, name) {
+					t.Errorf("ls %q output missing %q: %q", c.query, name, out)
+				}
+			}
+			for _, name := range c.exclude {
+				if strings.Contains(out, name) {
+					t.Errorf("ls %q output should not include %q: %q", c.query, name, out)
+				}
+			}
+		})
+	}
+}
+
+// TestLsOutputIsSortedByNameThenUsername pins down that ls need not
+// sort its own output: entries come back from store.Open already
+// sorted by name then username, per the invariant entry.Marshal
+// enforces on every write (entry.go). Entries here are added in
+// reverse-sorted order specifically to catch a regression if that
+// invariant ever breaks, or if ls started relying on insertion order
+// instead.
+func TestLsOutputIsSortedByNameThenUsername(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "zsite.com", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "asite.com", "-u", "b", "-p"})
+	withStdin(t, "c\n")
+	Run([]string{"add", "asite.com", "-u", "a", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+
+	wantOrder := []string{"asite.com", "asite.com", "zsite.com"}
+	var gotOrder []string
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		gotOrder = append(gotOrder, strings.Fields(line)[0])
+	}
+	if len(gotOrder) != len(wantOrder) {
+		t.Fatalf("ls output has %d lines, want %d: %q", len(gotOrder), len(wantOrder), out)
+	}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Errorf("ls output order = %v, want %v", gotOrder, wantOrder)
+			break
+		}
+	}
+}
+
+func TestLsFiltersByQuery(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls", "github"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "github.com") {
+		t.Errorf("ls github output missing github.com: %q", out)
+	}
+	if strings.Contains(out, "gitlab.com") {
+		t.Errorf("ls github output should not include gitlab.com: %q", out)
+	}
+}
+
+func TestLsNoMatchPrintsNothingAndSucceeds(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"ls", "nope"})
+	})
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if out != "" {
+		t.Errorf("ls with no match: output = %q, want empty", out)
+	}
+}
+
+func TestLsTooManyArgsIsUsageError(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	if code := Run([]string{"ls", "one", "two"}); code != ExitUsage {
+		t.Errorf("ls with two args: exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
 func TestReadPasswordFileWarnsOnLoosePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "master.txt")
 	if err := os.WriteFile(path, []byte("secret\n"), 0o644); err != nil {

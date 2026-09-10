@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -22,7 +23,7 @@ var ErrNoTTY = errors.New("no TTY available and $PASSGO_MASTER is not set")
 // prompt read from /dev/tty with echo disabled.
 func readPassword(prompt, passwordFile string) (string, error) {
 	if passwordFile != "" {
-		return readPasswordFile(passwordFile)
+		return readPasswordFile(passwordFile, os.Stderr)
 	}
 	if pw, ok := os.LookupEnv("PASSGO_MASTER"); ok {
 		return pw, nil
@@ -35,7 +36,7 @@ func readPassword(prompt, passwordFile string) (string, error) {
 // $PASSGO_MASTER short-circuit both prompts, same as readPassword.
 func readNewPassword(passwordFile string) (string, error) {
 	if passwordFile != "" {
-		return readPasswordFile(passwordFile)
+		return readPasswordFile(passwordFile, os.Stderr)
 	}
 	if pw, ok := os.LookupEnv("PASSGO_MASTER"); ok {
 		return pw, nil
@@ -56,22 +57,39 @@ func readNewPassword(passwordFile string) (string, error) {
 
 // readPasswordFile reads the master password from path: the file's
 // contents with a single trailing newline stripped, same convention
-// as ssh-keygen passphrase files and similar tools. Warns, rather
-// than refusing, if the file is readable by group or other — same
-// leniency vault.ReadFile already gives the vault file itself.
-func readPasswordFile(path string) (string, error) {
+// as ssh-keygen passphrase files and similar tools. If it is readable
+// by group or other, a warning is written to warn (typically
+// os.Stderr) — the same leniency vault.ReadFile already gives the
+// vault file itself.
+func readPasswordFile(path string, warn io.Writer) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	if info.Mode().Perm()&0o044 != 0 {
-		fmt.Fprintf(os.Stderr, "warning: %s is readable by group or other; consider chmod 600\n", path)
+		fmt.Fprintf(warn, "warning: %s is readable by group or other; consider chmod 600\n", path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimRight(string(data), "\r\n"), nil
+	return stripOneTrailingNewline(string(data)), nil
+}
+
+// stripOneTrailingNewline removes exactly one trailing "\n" (and its
+// optional preceding "\r"), leaving any further trailing newlines
+// alone. Editors write one final newline as a matter of convention,
+// not as part of the content, so only that one is not part of the
+// password — unlike strings.TrimRight("\r\n"), which would also eat
+// deliberate trailing blank lines the file's author put there.
+func stripOneTrailingNewline(s string) string {
+	if strings.HasSuffix(s, "\n") {
+		s = s[:len(s)-1]
+	}
+	if strings.HasSuffix(s, "\r") {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 // promptTTY reads a line from /dev/tty with echo disabled, regardless

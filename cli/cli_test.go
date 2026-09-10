@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,16 +269,67 @@ func TestMasterPasswordFileEnvFallback(t *testing.T) {
 func TestMasterPasswordFileOverridesEnvVar(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
 	t.Setenv("PASSGO_VAULT", path)
-	t.Setenv("PASSGO_MASTER", "wrong password")
 	pwFile := writePasswordFile(t, "correct horse battery staple")
 
+	// Vault is created with the file's password, with no conflicting
+	// $PASSGO_MASTER yet — so an implementation that always preferred
+	// $PASSGO_MASTER can't get lucky here by using the same value for
+	// both init and get.
 	if code := Run([]string{"--master-password-file", pwFile, "init"}); code != ExitOK {
 		t.Fatalf("init failed: %d", code)
 	}
-	// If --master-password-file had lost precedence to $PASSGO_MASTER,
-	// this get would fail authentication instead of simply not finding
-	// the (nonexistent) entry.
+
+	// Now introduce a conflicting $PASSGO_MASTER before get. If
+	// --master-password-file had lost precedence to it, get would fail
+	// authentication instead of simply not finding the (nonexistent)
+	// entry.
+	t.Setenv("PASSGO_MASTER", "wrong password")
 	if code := Run([]string{"--master-password-file", pwFile, "get", "anything"}); code != ExitNotFound {
 		t.Errorf("get: exit code = %d, want %d (--master-password-file should win over $PASSGO_MASTER)", code, ExitNotFound)
+	}
+}
+
+func TestReadPasswordFileWarnsOnLoosePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings bytes.Buffer
+	if _, err := readPasswordFile(path, &warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings.Len() == 0 {
+		t.Error("expected a warning for a group/world-readable password file")
+	}
+}
+
+func TestReadPasswordFileNoWarningOn0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings bytes.Buffer
+	if _, err := readPasswordFile(path, &warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warning for a 0600 password file: %s", warnings.String())
+	}
+}
+
+func TestStripOneTrailingNewline(t *testing.T) {
+	cases := map[string]string{
+		"secret\n":     "secret",
+		"secret\r\n":   "secret",
+		"secret":       "secret",
+		"secret\n\n":   "secret\n",
+		"secret\r\n\n": "secret\r\n",
+	}
+	for in, want := range cases {
+		if got := stripOneTrailingNewline(in); got != want {
+			t.Errorf("stripOneTrailingNewline(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

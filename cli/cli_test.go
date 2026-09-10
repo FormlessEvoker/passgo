@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // withTempVault points PASSGO_VAULT at a fresh temp path and sets
@@ -423,6 +424,297 @@ func TestRmRemovesOnlyTheMatchedEntry(t *testing.T) {
 	// The sibling shares a username but has its own name, so it survives.
 	if code := Run([]string{"get", "example.com/alice"}); code != ExitOK {
 		t.Errorf("get surviving entry: exit code = %d, want %d", code, ExitOK)
+	}
+}
+
+// seedEditFixture creates one fully-populated entry for the edit and
+// mv tests to operate on.
+func seedEditFixture(t *testing.T) {
+	t.Helper()
+	Run([]string{"init"})
+	withStdin(t, "original\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-n", "personal account", "-p"})
+}
+
+func TestEditChangesOnlyTheFlagsGiven(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	if code := Run([]string{"edit", "github.com", "-u", "bob"}); code != ExitOK {
+		t.Fatalf("edit -u exit code = %d, want %d", code, ExitOK)
+	}
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"show", "github.com"})
+	})
+	if code != ExitOK {
+		t.Fatalf("show exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "bob") {
+		t.Errorf("username was not updated: %q", out)
+	}
+	// Untouched fields survive.
+	if !strings.Contains(out, "personal account") {
+		t.Errorf("notes should have been left alone: %q", out)
+	}
+	secret, code := captureStdout(t, func() int {
+		return Run([]string{"get", "github.com"})
+	})
+	if code != ExitOK || strings.TrimSpace(secret) != "original" {
+		t.Errorf("secret should have been left alone, got %q (exit %d)", secret, code)
+	}
+}
+
+func TestEditPasswordPrompts(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	withStdin(t, "rotated\n")
+	if code := Run([]string{"edit", "github.com", "-p"}); code != ExitOK {
+		t.Fatalf("edit -p exit code = %d, want %d", code, ExitOK)
+	}
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"get", "github.com"})
+	})
+	if code != ExitOK {
+		t.Fatalf("get exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.TrimSpace(out) != "rotated" {
+		t.Errorf("secret = %q, want %q", strings.TrimSpace(out), "rotated")
+	}
+}
+
+// TestEditGenPrintsAndStoresSameSecret pins down that `edit -g` prints
+// the generated password, as `add -g` does — nothing else in the run
+// reveals it — and that what it prints is what it stored.
+func TestEditGenPrintsAndStoresSameSecret(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	printed, code := captureStdout(t, func() int {
+		return Run([]string{"edit", "github.com", "-g", "32"})
+	})
+	if code != ExitOK {
+		t.Fatalf("edit -g exit code = %d, want %d", code, ExitOK)
+	}
+	generated := strings.TrimSpace(printed)
+	if len(generated) != 32 {
+		t.Errorf("generated password length = %d, want 32: %q", len(generated), generated)
+	}
+
+	stored, code := captureStdout(t, func() int {
+		return Run([]string{"get", "github.com"})
+	})
+	if code != ExitOK {
+		t.Fatalf("get exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.TrimSpace(stored) != generated {
+		t.Errorf("stored secret %q != printed %q", strings.TrimSpace(stored), generated)
+	}
+}
+
+// TestEditEmptyValueClearsField distinguishes "flag given as empty"
+// from "flag omitted" — the former clears the field.
+func TestEditEmptyValueClearsField(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	if code := Run([]string{"edit", "github.com", "-n", ""}); code != ExitOK {
+		t.Fatalf("edit -n \"\" exit code = %d, want %d", code, ExitOK)
+	}
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"show", "github.com"})
+	})
+	if code != ExitOK {
+		t.Fatalf("show exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.Contains(out, "personal account") {
+		t.Errorf("notes should have been cleared: %q", out)
+	}
+}
+
+func TestEditRefreshesUpdated(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	before, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+
+	// entry.Now() truncates to whole seconds, so a same-second edit
+	// would produce an identical stamp and prove nothing.
+	time.Sleep(1100 * time.Millisecond)
+	if code := Run([]string{"edit", "github.com", "-u", "bob"}); code != ExitOK {
+		t.Fatalf("edit exit code = %d, want %d", code, ExitOK)
+	}
+
+	after, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if before == after {
+		t.Errorf("updated timestamp was not refreshed: %q", after)
+	}
+}
+
+func TestEditRequiresAtLeastOneFlag(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	if code := Run([]string{"edit", "github.com"}); code != ExitUsage {
+		t.Errorf("edit with no flags: exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestEditRejectsBothPasswordAndGen(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	if code := Run([]string{"edit", "github.com", "-p", "-g"}); code != ExitUsage {
+		t.Errorf("edit -p -g: exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestEditNoMatchAndAmbiguous(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	if code := Run([]string{"edit", "nope", "-u", "x"}); code != ExitNotFound {
+		t.Errorf("edit no match: exit code = %d, want %d", code, ExitNotFound)
+	}
+	if code := Run([]string{"edit", "git", "-u", "x"}); code != ExitAmbiguous {
+		t.Errorf("edit ambiguous: exit code = %d, want %d", code, ExitAmbiguous)
+	}
+}
+
+// TestEditDoesNotTakeANameFlag guards the §6 decision to route
+// renames through mv: -N and --name must not quietly become field
+// edits if someone reaches for them out of habit.
+func TestEditDoesNotTakeANameFlag(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	for _, flag := range []string{"--name", "-N"} {
+		if code := Run([]string{"edit", "github.com", flag, "other.com"}); code != ExitUsage {
+			t.Errorf("edit %s: exit code = %d, want %d", flag, code, ExitUsage)
+		}
+	}
+}
+
+func TestMvRenamesEntryPreservingOtherFields(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	// A new name disjoint from the old one, so that "the old name no
+	// longer resolves" is a meaningful assertion. Renaming to
+	// github.com/personal would leave `get github.com` still matching
+	// via the §5 substring stage, which is correct but proves nothing
+	// here.
+	if code := Run([]string{"mv", "github.com", "forge.example"}); code != ExitOK {
+		t.Fatalf("mv exit code = %d, want %d", code, ExitOK)
+	}
+
+	if code := Run([]string{"get", "github.com"}); code != ExitNotFound {
+		t.Errorf("old name should be gone: exit code = %d, want %d", code, ExitNotFound)
+	}
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"show", "forge.example"})
+	})
+	if code != ExitOK {
+		t.Fatalf("show new name exit code = %d, want %d", code, ExitOK)
+	}
+	// Everything except the name rides along.
+	if !strings.Contains(out, "alice") || !strings.Contains(out, "personal account") {
+		t.Errorf("mv did not preserve other fields: %q", out)
+	}
+	secret, code := captureStdout(t, func() int {
+		return Run([]string{"get", "forge.example"})
+	})
+	if code != ExitOK || strings.TrimSpace(secret) != "original" {
+		t.Errorf("mv did not preserve the secret, got %q (exit %d)", secret, code)
+	}
+}
+
+func TestMvRejectsExistingName(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	if code := Run([]string{"mv", "github.com", "GITLAB.COM"}); code != ExitGeneral {
+		t.Errorf("mv onto an existing name: exit code = %d, want %d", code, ExitGeneral)
+	}
+	// The rename was refused, so both entries keep their names.
+	if code := Run([]string{"get", "github.com"}); code != ExitOK {
+		t.Errorf("source should be unchanged: exit code = %d, want %d", code, ExitOK)
+	}
+}
+
+// TestMvAllowsCaseOnlyRename covers the self-exemption in the
+// collision check: an entry may be renamed to a different casing of
+// its own name, which would otherwise collide with itself.
+func TestMvAllowsCaseOnlyRename(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	if code := Run([]string{"mv", "github.com", "GitHub.com"}); code != ExitOK {
+		t.Fatalf("case-only mv exit code = %d, want %d", code, ExitOK)
+	}
+
+	out, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "GitHub.com") {
+		t.Errorf("name was not recased: %q", out)
+	}
+}
+
+func TestMvRejectsEmptyAndMissingArguments(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	cases := [][]string{
+		{"mv"},
+		{"mv", "github.com"},
+		{"mv", "github.com", ""},
+		{"mv", "github.com", "   "},
+		{"mv", "github.com", "a", "b"},
+	}
+	for _, args := range cases {
+		if code := Run(args); code != ExitUsage {
+			t.Errorf("Run(%q): exit code = %d, want %d", args, code, ExitUsage)
+		}
+	}
+}
+
+func TestMvNoMatchAndAmbiguous(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "bob", "-p"})
+
+	if code := Run([]string{"mv", "nope", "other.com"}); code != ExitNotFound {
+		t.Errorf("mv no match: exit code = %d, want %d", code, ExitNotFound)
+	}
+	if code := Run([]string{"mv", "git", "other.com"}); code != ExitAmbiguous {
+		t.Errorf("mv ambiguous: exit code = %d, want %d", code, ExitAmbiguous)
+	}
+}
+
+func TestAddRejectsEmptyName(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	if code := Run([]string{"add", "", "-p"}); code != ExitUsage {
+		t.Errorf("add with empty name: exit code = %d, want %d", code, ExitUsage)
 	}
 }
 

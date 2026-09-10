@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
-	"github.com/FormlessEvoker/passgo/crypto"
 	"github.com/FormlessEvoker/passgo/entry"
 	"github.com/FormlessEvoker/passgo/store"
 )
@@ -18,70 +16,26 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 		return ExitUsage
 	}
 	name := args[0]
-	rest := args[1:]
 
-	var (
-		username     string
-		notes        string
-		wantPassword bool
-		wantGen      bool
-		genLength    = crypto.DefaultGenLength
-	)
-
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "-u", "--username":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "error: -u/--username requires a value")
-				return ExitUsage
-			}
-			i++
-			username = rest[i]
-		case "-p", "--password":
-			wantPassword = true
-		case "-g", "--gen":
-			wantGen = true
-			// The length argument is optional: only consume the next
-			// token if it actually parses as a positive integer.
-			if i+1 < len(rest) {
-				if n, err := strconv.Atoi(rest[i+1]); err == nil && n > 0 {
-					genLength = n
-					i++
-				}
-			}
-		case "-n", "--notes":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "error: -n/--notes requires a value")
-				return ExitUsage
-			}
-			i++
-			notes = rest[i]
-		default:
-			fmt.Fprintf(os.Stderr, "error: unknown flag %q\n", rest[i])
-			return ExitUsage
-		}
+	if err := validateName(name); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return ExitUsage
 	}
 
-	if wantPassword == wantGen {
+	flags, err := parseFieldFlags(args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return ExitUsage
+	}
+	if flags.wantPassword == flags.wantGen {
 		fmt.Fprintln(os.Stderr, "error: exactly one of -p or -g is required")
 		return ExitUsage
 	}
 
-	var secret string
-	if wantPassword {
-		pw, err := promptSecret("Password: ")
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return ExitUsage
-		}
-		secret = pw
-	} else {
-		gen, err := crypto.GeneratePassword(genLength)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return ExitGeneral
-		}
-		secret = gen
+	secret, code, err := flags.newSecret()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return code
 	}
 
 	password, err := readPassword("Master password: ", passwordFile)
@@ -111,9 +65,9 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{
 		Name:     name,
-		Username: username,
+		Username: flags.username,
 		Secret:   secret,
-		Notes:    notes,
+		Notes:    flags.notes,
 		Updated:  entry.Now(),
 	})
 
@@ -122,7 +76,7 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 		return ExitGeneral
 	}
 
-	if wantGen {
+	if flags.wantGen {
 		fmt.Println(secret)
 	}
 	return ExitOK

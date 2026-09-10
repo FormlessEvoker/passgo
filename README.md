@@ -11,7 +11,9 @@ network access of any kind — the vault is a file, and you own it.
 ## Status
 
 Early development. The vault format is not yet stable; treat this as
-experimental and keep backups until v1.0.
+experimental and keep backups until v1.0. Breaking format changes are allowed
+before then and may land without a migration path — §3.5 of the specification
+sets out what that guarantees, and what changes at 1.0.
 
 ## Why
 
@@ -44,9 +46,8 @@ passgo add github.com -u me@example.com -g   # -g generates and stores a strong 
 passgo get github.com | pbcopy               # copy the password, print nothing
 ```
 
-`ls`, `show`, `edit`, `rm`, `gen`, and `passwd` are designed (see
-[SPECIFICATION.md](SPECIFICATION.md)) but not implemented yet — see the table
-below.
+Everything below is implemented except `passwd`, which is designed (see
+[SPECIFICATION.md](SPECIFICATION.md)) but not built yet.
 
 ## Commands
 
@@ -55,16 +56,22 @@ below.
 | `passgo init` | Create a new vault and set the master password. | ✅ |
 | `passgo add <name>` | Add an entry. `-g` generates the password for you. | ✅ |
 | `passgo get <query>` | Print the password for a single entry, and nothing else. | ✅ |
-| `passgo show <query>` | Show an entry's details with the password redacted. | not yet |
+| `passgo show <query>` | Show an entry's details with the password redacted. | ✅ |
 | `passgo ls [query]` | List entries. Never prints secrets. | ✅ |
-| `passgo edit <query>` | Change fields on an existing entry. | not yet |
-| `passgo rm <query>` | Delete an entry. | not yet |
-| `passgo gen [length]` | Generate a password without storing it. | not yet |
+| `passgo edit <query>` | Change fields on an existing entry. | ✅ |
+| `passgo mv <query> <new-name>` | Rename an entry, leaving its other fields alone. | ✅ |
+| `passgo rm <query>` | Delete an entry. | ✅ |
+| `passgo gen [length]` | Generate a password without storing it. | ✅ |
 | `passgo passwd` | Change the master password and re-encrypt the vault. | not yet |
 
-`get` is deliberately the only command that will put a secret on stdout, and it
-prints the password alone with no label or newline decoration, so it pipes
-cleanly into `pbcopy`, `wl-copy`, or anything else.
+Four things put a secret on stdout: `get`, `gen`, and the `-g` flag on `add` and
+`edit`. All four print the secret alone — no label, no quoting — and add a
+trailing newline only when stdout is a terminal, so piping into `pbcopy`,
+`wl-copy`, or anything else yields the exact secret and nothing more. Prompts
+and diagnostics always go to stderr, so redirecting stdout never mixes them in.
+
+Nothing else prints a secret: `show` redacts the password, and `ls` never reads
+one.
 
 Full command semantics, exit codes, and the vault format are in
 [SPECIFICATION.md](SPECIFICATION.md).

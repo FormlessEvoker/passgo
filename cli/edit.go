@@ -83,7 +83,7 @@ func runEdit(vaultPath, passwordFile string, args []string) int {
 	// can be piped somewhere on the spot, since nothing else in this
 	// run reveals it.
 	if flags.wantGen {
-		fmt.Println(secret)
+		printSecret(secret)
 	}
 	return ExitOK
 }

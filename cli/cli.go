@@ -24,6 +24,7 @@ Usage:
   passgo edit <query> [-u username] [-p | -g [length]] [-n notes]
   passgo mv <query> <new-name>
   passgo rm <query> [-f]
+  passgo gen [length]
   passgo --version | --help
 
 Global flags:
@@ -56,6 +57,11 @@ func Run(args []string) int {
 	case "version", "--version":
 		fmt.Println("passgo", versionString())
 		return ExitOK
+	case "gen":
+		// Handled here, ahead of ResolvePath below: `gen` touches
+		// neither the vault nor the master password (§6), so a vault
+		// path that cannot be resolved must not stop it running.
+		return runGen(cmdArgs)
 	}
 
 	if vaultPath == "" {

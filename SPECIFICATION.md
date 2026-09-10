@@ -385,6 +385,14 @@ searches usernames, and `ls` is the command for browsing rather than acting.
 Global flags: `--vault <path>`, `--master-password-file <path>`, `--help`,
 `--version`.
 
+**Secrets on stdout.** Every command that writes a secret to stdout — `get`,
+`gen`, and the `-g` paths of `add` and `edit` — terminates it with a newline
+only when stdout is a terminal. Piping therefore yields the exact secret and
+nothing else, which matters because a trailing newline survives `| pbcopy` and,
+pasted into a password field, can submit the form before the rest is typed.
+Prompts and diagnostics always go to stderr, so redirecting stdout never mixes
+them into the secret.
+
 ### `passgo init`
 Creates a new vault at the resolved path. Prompts for the master password
 twice. Fails with exit code 1 if a vault already exists — overwriting is never
@@ -395,14 +403,14 @@ implicit.
 the entry's `secret`), `-g --gen [length]`, `-n --notes`.
 
 Exactly one of `-p` or `-g` is required. `-g` prints the generated password to
-stdout on success so it can be piped somewhere on first use. Rejects a
+stdout on success, under the newline rule above, so it can be piped somewhere on
+first use. Rejects a
 duplicate `name` — compared case-insensitively, ignoring `username` — with exit
 code 1, since `name` is the entry's identity (§3.2).
 
 ### `passgo get <query> [--clip]`
-Prints the password alone to stdout — no label, no field name, no quoting. A
-trailing newline is written only when stdout is a TTY, so piping produces the
-exact secret and nothing else. All prompts and diagnostics go to stderr.
+Prints the password alone to stdout — no label, no field name, no quoting —
+under the newline rule above.
 
 `--clip` copies to the clipboard instead of printing, shelling out to `pbcopy`,
 `wl-copy`, or `xclip` — whichever is found first. No clipboard library
@@ -423,6 +431,7 @@ field flags as `add`, with the same meanings. Only the flags given are changed;
 `-p` prompts for a new password and `-g` generates one, printing it to stdout
 exactly as `add -g` does, since nothing else in the run reveals it. Refreshes
 `updated`.
+
 
 A flag given with an empty value clears that field: `edit x -n ""` removes the
 notes, which is distinct from omitting `-n` and leaving them alone. At least one
@@ -455,8 +464,15 @@ which is precisely the exposure this tool exists to avoid.
 Prompts for confirmation unless `-f/--force` is given.
 
 ### `passgo gen [length]`
-Generates a password and prints it. Does not touch the vault and does not
-prompt for the master password, so it is usable as a standalone generator.
+Generates a password and prints it, under the newline rule above. `[length]` is
+a positional argument defaulting to 20 (§2.3); a value that is not a positive
+integer is a usage error, since unlike `-g [length]` there is nothing else a
+positional argument here could be.
+
+Does not touch the vault and does not prompt for the master password, so it is
+usable as a standalone generator. It is dispatched before the vault path is
+resolved at all, so an absent, unreadable, or unresolvable vault cannot stop it
+running — a generator that needs a vault to work would not be standalone.
 
 ### `passgo passwd`
 Prompts for the current master password, then the new one twice. Generates a

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,8 @@ import (
 	"time"
 
 	"github.com/FormlessEvoker/passgo/crypto"
+	"github.com/FormlessEvoker/passgo/store"
+	"github.com/FormlessEvoker/passgo/vault"
 )
 
 // withTempVault points PASSGO_VAULT at a fresh temp path and sets
@@ -30,6 +34,36 @@ func withStdin(t *testing.T, text string) {
 	orig := stdin
 	stdin = strings.NewReader(text)
 	t.Cleanup(func() { stdin = orig })
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// what was written to it, along with fn's return value. Diagnostics
+// and warnings all go to stderr, so this is where their content is
+// asserted.
+func captureStderr(t *testing.T, fn func() int) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	code := fn()
+
+	w.Close()
+	os.Stderr = orig
+
+	var buf strings.Builder
+	tmp := make([]byte, 4096)
+	for {
+		n, readErr := r.Read(tmp)
+		buf.Write(tmp[:n])
+		if readErr != nil {
+			break
+		}
+	}
+	return buf.String(), code
 }
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
@@ -1021,6 +1055,96 @@ func TestPasswdRejectsUnknownFlagAndMissingValue(t *testing.T) {
 		if code := Run(args); code != ExitUsage {
 			t.Errorf("Run(%q): exit code = %d, want %d", args, code, ExitUsage)
 		}
+	}
+}
+
+// TestPasswdRejectsUnchangedPassword covers the §4 rule about the
+// outcome rather than the source: pointing both flags at the same
+// file is a route to rotating a vault to the password it already
+// has, which must be refused rather than reported as a success.
+func TestPasswdRejectsUnchangedPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	// No $PASSGO_MASTER: both passwords come from files here.
+	t.Setenv("PASSGO_MASTER", "")
+
+	same := writePasswordFile(t, "one and the same")
+	if code := Run([]string{"--master-password-file", same, "init"}); code != ExitOK {
+		t.Fatalf("init exit code = %d, want %d", code, ExitOK)
+	}
+
+	code := Run([]string{"--master-password-file", same, "passwd", "--new-master-password-file", same})
+	if code != ExitUsage {
+		t.Errorf("passwd with the same file for both passwords: exit code = %d, want %d", code, ExitUsage)
+	}
+
+	// Distinct files holding identical text must be refused too — the
+	// rule is about the value, not the path.
+	twin := writePasswordFile(t, "one and the same")
+	if code := Run([]string{"--master-password-file", same, "passwd", "--new-master-password-file", twin}); code != ExitUsage {
+		t.Errorf("passwd with an identical new password: exit code = %d, want %d", code, ExitUsage)
+	}
+
+	// And the vault still opens under the original password.
+	if code := Run([]string{"--master-password-file", same, "ls"}); code != ExitOK {
+		t.Errorf("vault no longer opens after a refused rotation: exit code = %d", code)
+	}
+}
+
+// TestPasswdReportsANonDurableRotation covers §6's MUST: when the
+// write commits but the directory sync fails, the command must say
+// the password DID change. Reporting a plain failure would send the
+// user back to a password their vault no longer accepts.
+func TestPasswdReportsANonDurableRotation(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	orig := rotate
+	rotate = func(s *store.Store, newPassword string) error {
+		if err := orig(s, newPassword); err != nil {
+			return err
+		}
+		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
+	}
+	defer func() { rotate = orig }()
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitGeneral)
+	}
+	if !strings.Contains(out, "WAS changed") {
+		t.Errorf("stderr does not state that the password changed: %q", out)
+	}
+
+	// The claim has to be true: the vault really does want the new one.
+	t.Setenv("PASSGO_MASTER", "the replacement")
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("vault does not open under the new password: exit code = %d", code)
+	}
+}
+
+// TestPasswdOrdinaryFailureOmitsTheChangedNotice is the other half:
+// a failure that did not commit must not claim the password changed.
+func TestPasswdOrdinaryFailureOmitsTheChangedNotice(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	orig := rotate
+	rotate = func(*store.Store, string) error { return errors.New("disk on fire") }
+	defer func() { rotate = orig }()
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitGeneral)
+	}
+	if strings.Contains(out, "WAS changed") {
+		t.Errorf("a non-committing failure claimed the password changed: %q", out)
 	}
 }
 

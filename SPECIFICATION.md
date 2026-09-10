@@ -344,13 +344,19 @@ If no TTY is available and neither the password file nor `$PASSGO_MASTER` is
 set, the command fails with exit code 2 rather than silently reading from
 stdin.
 
-`passwd` needs two passwords, and they cannot come from the same source. The
-current one is read exactly as above. The new one comes from
-`--new-master-password-file <path>` (or `$PASSGO_NEW_MASTER_FILE`) when given,
-and otherwise from a TTY prompt asked twice that must match. It deliberately
-does **not** fall back to `$PASSGO_MASTER`: that variable holds the current
-password, so honouring it would rotate the vault to the password it already has
-and report success — the one outcome someone running `passwd` never wants.
+`passwd` needs two passwords. The current one is read exactly as above. The new
+one comes from `--new-master-password-file <path>` (or
+`$PASSGO_NEW_MASTER_FILE`) when given, and otherwise from a TTY prompt asked
+twice that must match. It deliberately does **not** fall back to
+`$PASSGO_MASTER`, which holds the current password.
+
+The rule that matters is about the outcome, not the source: **`passwd` MUST
+reject a new password equal to the current one**, with exit code 2, however the
+two arrived — the same file given to both flags, the same string typed at both
+prompts, or two sources that happen to hold the same value. Rotating a vault to
+the password it already has and reporting success is the one result someone
+running `passwd` never wants, and declining to read `$PASSGO_MASTER` for the new
+password closes only one route to it.
 
 Each command performs exactly one derive-and-unlock, `passwd` excepted — it
 verifies the old password and derives the new one, so it pays for two. There is
@@ -499,6 +505,7 @@ re-derives the key, and rewrites the vault. Entries are unchanged.
 
 The vault is opened, and the current password thereby verified, before the new
 one is asked for: a mistyped current password should cost one prompt, not three.
+A new password equal to the current one is refused with exit code 2 (§4).
 
 This is the one command that performs two key derivations rather than the single
 one §4 describes — the old password must be verified and the new one derived —

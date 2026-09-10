@@ -27,25 +27,6 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// WriteAtomic writes data to path, overwriting an existing vault only
-// via an atomic rename — never truncating it in place — per
-// SPECIFICATION.md §3.4:
-//
-//  1. write to a temp file in the same directory (same filesystem, so
-//     the rename is atomic), mode 0600;
-//  2. fsync the temp file;
-//  3. copy the current vault to path+".bak" if one exists;
-//  4. rename the temp file over path;
-//  5. fsync the containing directory.
-//
-// If any step fails, the temp file is removed and the original vault
-// (if any) is left untouched.
-// syncDir indirects fsyncDir so tests can exercise the one failure
-// mode that cannot be provoked naturally: a directory sync failing
-// after the rename has already committed. That window is why
-// ErrNotDurable exists, so it needs to be reachable in a test.
-var syncDir = fsyncDir
-
 // ErrNotDurable reports a write that was installed but may not
 // survive a crash: the rename completed, so the new contents are
 // already what any reader sees, but the containing directory could
@@ -59,6 +40,30 @@ var syncDir = fsyncDir
 // the one mistake that can strand someone outside their own vault.
 var ErrNotDurable = errors.New("vault: write installed but directory fsync failed")
 
+// syncDir indirects fsyncDir so tests can exercise the one failure
+// mode that cannot be provoked naturally: a directory sync failing
+// after the rename has already committed. That window is why
+// ErrNotDurable exists, so it needs to be reachable in a test.
+var syncDir = fsyncDir
+
+// WriteAtomic writes data to path, overwriting an existing vault only
+// via an atomic rename — never truncating it in place — per
+// SPECIFICATION.md §3.4:
+//
+//  1. write to a temp file in the same directory (same filesystem, so
+//     the rename is atomic), mode 0600;
+//  2. fsync the temp file;
+//  3. copy the current vault to path+".bak" if one exists;
+//  4. rename the temp file over path;
+//  5. fsync the containing directory.
+//
+// Step 4 is the commit point, and failures on either side of it mean
+// opposite things. If any step before the rename fails, the temp file
+// is removed and the original vault (if any) is left untouched. If
+// the rename succeeds and only step 5 fails, the new data is already
+// installed and visible to every reader; WriteAtomic then returns an
+// error wrapping ErrNotDurable, and callers MUST treat the write as
+// having taken effect rather than as a failure.
 func WriteAtomic(path string, data []byte) (err error) {
 	dir := filepath.Dir(path)
 	tmpPath, err := writeTemp(dir, data)
@@ -105,6 +110,10 @@ func WriteAtomic(path string, data []byte) (err error) {
 // stat-then-write check, os.Link is atomic — it fails with
 // os.ErrExist if path already exists, so there is no window between
 // checking and creating for a concurrent writer to land in.
+//
+// The link is this function's commit point, and it carries the same
+// ErrNotDurable distinction WriteAtomic does: a failure to fsync the
+// directory afterwards leaves a created vault behind, not nothing.
 func WriteAtomicNoOverwrite(path string, data []byte) (err error) {
 	dir := filepath.Dir(path)
 	tmpPath, err := writeTemp(dir, data)

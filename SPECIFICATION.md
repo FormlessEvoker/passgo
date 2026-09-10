@@ -6,7 +6,7 @@ behaviour of each command. It is the reference the implementation is built
 against; where code and this document disagree, this document is wrong and
 should be corrected in the same change.
 
-**Format version: 1** (unstable until v1.0)
+**Format version: 1** (unstable until v1.0 — see §3.5)
 
 ---
 
@@ -170,9 +170,10 @@ The decrypted payload is UTF-8 JSON:
 `entries` is sorted by `name`, then `username`, on every write. This keeps
 diffs stable for anyone versioning the file.
 
-A reader MUST reject a payload whose `version` doesn't match the version it
+A reader MUST reject a payload whose `version` is *newer* than the version it
 implements, rather than accepting it and risking a later write silently
-dropping fields a newer version added.
+dropping fields a newer version added. An older payload version is a migration,
+not an error; §3.5 defines both cases.
 
 Deferred, not in v1: a stable `id` independent of `name`, unknown-field
 preservation for forward compatibility (the format is unstable until v1.0, so
@@ -215,6 +216,69 @@ link either creates the file or fails, with nothing in between.
 Every command that mutates the vault also re-reads the file immediately
 before this sequence and compares it against what it read at open, refusing
 to proceed if they differ — see "Concurrent writers" in §1.
+
+### 3.5 Versioning and compatibility
+
+A vault carries two independent version numbers, and they answer different
+questions:
+
+| Version | Where | Governs |
+| --- | --- | --- |
+| Format version | Header byte 6 (§3.1) | The envelope: field offsets, KDF identity, how the ciphertext is framed. Read before any decryption. |
+| Payload version | The `version` key in the decrypted JSON (§3.2) | The payload shape: which fields exist and what they mean. Read only after a successful decrypt. |
+
+They move independently. Adding a cipher suite bumps the format version and
+leaves the payload version alone; adding an entry field does the reverse. Two
+numbers rather than one because the format version must be legible to a reader
+holding no key, while the payload version is only reachable after the master
+password has already done its work.
+
+**A third kind of change bumps neither.** A constraint on what well-formed data
+may contain — a uniqueness rule, a required relationship between fields — leaves
+both the envelope and the JSON shape untouched. A file violating such a rule
+parses perfectly; it is merely no longer *valid*. Calling that a format change
+would be a category error, and bumping a version for it would reject files that
+are entirely readable.
+
+The distinction is worth stating plainly: **versions govern what can be parsed,
+invariants govern what can be trusted.** Conflating them leads either to
+refusing files that are perfectly readable, or to accepting files that quietly
+violate the rules the rest of the implementation assumes.
+
+#### Reading a version other than the implemented one
+
+- **Newer than implemented — MUST reject,** at both layers, with a message
+  naming the version found. A newer writer may have added fields this build
+  does not know about, and the next write would silently drop them (§3.2). A
+  password manager that quietly discards data it did not understand is worse
+  than one that refuses to open.
+- **Older than implemented — reserved for migration.** The upgrade happens in
+  memory on read and is persisted on the next write that would have happened
+  anyway; reading a vault MUST NOT rewrite it as a side effect, because a read
+  is expected to be harmless and may be running against a file the user cannot
+  currently write to. Any such rewrite goes through §3.4's atomic write, so a
+  migration that fails leaves the original vault intact.
+- **Invariant violations are never a reason to refuse to open.** They warn to
+  stderr, the same leniency §3.3 gives a group-readable vault file, and are
+  repaired by an explicit command rather than implicitly on read.
+
+The implementation currently rejects *any* mismatch at either layer, older
+included, because only version 1 has ever existed and there is nothing to
+migrate from. The rules above define what happens when that stops being true;
+they are not yet exercised by code.
+
+#### The pre-1.0 exemption
+
+While the format version is marked unstable, breaking changes are permitted
+with no migration path — a vault written by an earlier build may simply stop
+being readable, and an invariant may be introduced that existing files violate.
+This is the whole point of shipping a version marked unstable, and it is why
+the rules above describe an obligation that begins at 1.0 rather than one owed
+today.
+
+At 1.0 that exemption ends. From then on every version that has ever been
+written in a release MUST have a path forward, which in practice means a
+migration is written in the same change that bumps a version.
 
 ---
 

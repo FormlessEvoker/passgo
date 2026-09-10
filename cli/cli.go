@@ -21,6 +21,7 @@ Usage:
   passgo get <query> [-u username] [--clip]
   passgo show <query> [-u username]
   passgo ls [query]
+  passgo rm <query> [-u username] [-f]
   passgo --version | --help
 
 Global flags:
@@ -74,6 +75,8 @@ func Run(args []string) int {
 		return runShow(vaultPath, passwordFile, cmdArgs)
 	case "ls":
 		return runLs(vaultPath, passwordFile, cmdArgs)
+	case "rm":
+		return runRm(vaultPath, passwordFile, cmdArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", cmd)
 		printUsage(os.Stderr)

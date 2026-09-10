@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/FormlessEvoker/passgo/crypto"
@@ -320,5 +321,49 @@ func TestResolvePathXDG(t *testing.T) {
 	want := filepath.Join("/xdg/data", "passgo", "vault.pgv")
 	if p != want {
 		t.Errorf("ResolvePath() = %q, want %q", p, want)
+	}
+}
+
+// TestWriteAtomicReportsCommittedButNotDurable pins down the
+// distinction ErrNotDurable exists to make: when the directory sync
+// fails, the rename has already happened, so the new contents are
+// live even though an error is returned. A caller that treated this
+// like any other write failure would believe the old file still
+// stood.
+func TestWriteAtomicReportsCommittedButNotDurable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := syncDir
+	syncDir = func(string) error { return errors.New("simulated fsync failure") }
+	defer func() { syncDir = orig }()
+
+	err := WriteAtomic(path, []byte("replacement"))
+	if !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("WriteAtomic with a failing dir sync: err = %v, want ErrNotDurable", err)
+	}
+
+	// The whole point: despite the error, the new contents are live.
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "replacement" {
+		t.Errorf("file contents = %q, want %q — the rename committed before the sync failed", got, "replacement")
+	}
+
+	// And no temp file was left behind by the cleanup path.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "vault.pgv") || e.Name() == "vault.pgv.bak" {
+			continue
+		}
+		t.Errorf("stray file left in vault directory: %s", e.Name())
 	}
 }

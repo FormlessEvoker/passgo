@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -39,14 +40,36 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 //
 // If any step fails, the temp file is removed and the original vault
 // (if any) is left untouched.
+// syncDir indirects fsyncDir so tests can exercise the one failure
+// mode that cannot be provoked naturally: a directory sync failing
+// after the rename has already committed. That window is why
+// ErrNotDurable exists, so it needs to be reachable in a test.
+var syncDir = fsyncDir
+
+// ErrNotDurable reports a write that was installed but may not
+// survive a crash: the rename completed, so the new contents are
+// already what any reader sees, but the containing directory could
+// not be fsynced. The data is live; only its durability is in doubt.
+//
+// It is kept distinct from every other write error because the
+// caller's recovery is the opposite. An error before the rename means
+// nothing changed and the old file stands. This means everything
+// changed. Reporting the two the same way would tell a user their
+// `passwd` failed when the vault already requires the new password —
+// the one mistake that can strand someone outside their own vault.
+var ErrNotDurable = errors.New("vault: write installed but directory fsync failed")
+
 func WriteAtomic(path string, data []byte) (err error) {
 	dir := filepath.Dir(path)
 	tmpPath, err := writeTemp(dir, data)
 	if err != nil {
 		return err
 	}
+	// Cleanup applies only before the rename. Past it the temp file no
+	// longer exists under that name, and the write has committed.
+	renamed := false
 	defer func() {
-		if err != nil {
+		if err != nil && !renamed {
 			os.Remove(tmpPath)
 		}
 	}()
@@ -68,7 +91,13 @@ func WriteAtomic(path string, data []byte) (err error) {
 	if err = os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	return fsyncDir(dir)
+	renamed = true
+
+	if syncErr := syncDir(dir); syncErr != nil {
+		err = fmt.Errorf("%w: %v", ErrNotDurable, syncErr)
+		return err
+	}
+	return nil
 }
 
 // WriteAtomicNoOverwrite is WriteAtomic's counterpart for `init`: it
@@ -87,7 +116,14 @@ func WriteAtomicNoOverwrite(path string, data []byte) (err error) {
 	if err = os.Link(tmpPath, path); err != nil {
 		return err
 	}
-	return fsyncDir(dir)
+	// Past the commit point here too: the link is what makes the vault
+	// exist, so a failed directory fsync leaves a created vault behind
+	// rather than nothing.
+	if syncErr := syncDir(dir); syncErr != nil {
+		err = fmt.Errorf("%w: %v", ErrNotDurable, syncErr)
+		return err
+	}
+	return nil
 }
 
 // writeTemp creates the vault's containing directory if needed and

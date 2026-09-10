@@ -225,8 +225,17 @@ Every write is atomic and never truncates the existing vault in place:
 5. `rename` the temporary file over the vault.
 6. `fsync` the containing directory.
 
-If any step fails, the temporary file is removed and the original vault is left
-untouched.
+If any step fails *before* the rename, the temporary file is removed and the
+original vault is left untouched.
+
+The rename is the commit point, and step 6 comes after it. A failure to fsync
+the directory therefore leaves the new vault already in place and visible to
+every reader, with only its survival across a power loss in doubt. This is
+reported as a distinct error from every other write failure, because the two
+demand opposite responses: before the rename nothing changed, after it
+everything did. Treating them alike would tell a user that a write failed when
+it had in fact taken effect — which for `passwd` means directing them back to a
+master password that no longer opens their vault.
 
 `init`'s no-overwrite guarantee (§6) is enforced the same way, but step 5 uses
 a create-only link instead of an unconditional rename: the temporary file is
@@ -493,10 +502,15 @@ one is asked for: a mistyped current password should cost one prompt, not three.
 
 This is the one command that performs two key derivations rather than the single
 one §4 describes — the old password must be verified and the new one derived —
-so it costs roughly twice what other commands do. The write is atomic and takes
-the same pre-write conflict check as every other mutation (§3.4), so a failure
-partway through leaves the vault readable under the old password rather than
-under neither.
+so it costs roughly twice what other commands do.
+
+The write is atomic and takes the same pre-write conflict check as every other
+mutation, so a failure before the rename leaves the vault readable under the old
+password rather than under neither. In the one case where a write fails *after*
+the rename (§3.4), the rotation has already taken effect: `passwd` MUST then
+report that the password did change, rather than reporting a plain failure,
+since the alternative leaves the user holding a password their vault no longer
+accepts.
 
 ### Exit codes
 

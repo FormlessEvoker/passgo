@@ -16,6 +16,14 @@ import (
 // error, not read from stdin.
 var ErrNoTTY = errors.New("no TTY available and $PASSGO_MASTER is not set")
 
+// ErrNoNewPasswordSource is ErrNoTTY's counterpart for `passwd`'s new
+// password. It is a separate error because ErrNoTTY's message names
+// $PASSGO_MASTER, which is very likely set when this fires and is
+// ignored on purpose (§4) — reporting it would send the user to
+// configure the one source that cannot help them. Like ErrNoTTY it is
+// a usage error, exit code 2.
+var ErrNoNewPasswordSource = errors.New("no TTY available and neither --new-master-password-file nor $PASSGO_NEW_MASTER_FILE is set")
+
 // readPassword returns the master password. In order of precedence:
 // passwordFile if non-empty (from --master-password-file or
 // $PASSGO_MASTER_FILE), then $PASSGO_MASTER (documented as
@@ -71,11 +79,11 @@ func readReplacementPassword(newPasswordFile string) (string, error) {
 	}
 	p1, err := promptTTY("New master password: ")
 	if err != nil {
-		return "", err
+		return "", replaceNoTTY(err)
 	}
 	p2, err := promptTTY("Confirm new master password: ")
 	if err != nil {
-		return "", err
+		return "", replaceNoTTY(err)
 	}
 	if p1 != p2 {
 		return "", errors.New("passwords did not match")
@@ -137,4 +145,13 @@ func promptTTY(prompt string) (string, error) {
 		return "", err
 	}
 	return string(pw), nil
+}
+
+// replaceNoTTY swaps ErrNoTTY for ErrNoNewPasswordSource, leaving any
+// other error alone.
+func replaceNoTTY(err error) error {
+	if errors.Is(err, ErrNoTTY) {
+		return ErrNoNewPasswordSource
+	}
+	return err
 }

@@ -2,11 +2,13 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/FormlessEvoker/passgo/entry"
+	"github.com/FormlessEvoker/passgo/vault"
 )
 
 func TestInitOpenSaveRoundTrip(t *testing.T) {
@@ -142,5 +144,174 @@ func TestSaveSortsAndPersistsEntries(t *testing.T) {
 	}
 	if s2.Payload.Entries[0].Name != "a.com" || s2.Payload.Entries[1].Name != "b.com" {
 		t.Errorf("entries not sorted by name after Save: %+v", s2.Payload.Entries)
+	}
+}
+
+func TestChangePasswordRotatesAndPreservesEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "old pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path, "old pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ChangePassword("new pw"); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	if _, err := Open(path, "old pw"); err == nil {
+		t.Error("old password still opens the vault after ChangePassword")
+	}
+
+	reopened, err := Open(path, "new pw")
+	if err != nil {
+		t.Fatalf("new password does not open the vault: %v", err)
+	}
+	defer reopened.Close()
+	if len(reopened.Payload.Entries) != 1 || reopened.Payload.Entries[0].Secret != "1" {
+		t.Errorf("entries after ChangePassword: %+v", reopened.Payload.Entries)
+	}
+}
+
+// TestChangePasswordDetectsConcurrentModification is the rotation
+// counterpart of TestSaveDetectsConcurrentModification: a rekey based
+// on a stale read must be refused rather than re-encrypting an old
+// snapshot over someone else's write — which would discard their
+// entry *and* change the password needed to discover that.
+func TestChangePasswordDetectsConcurrentModification(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s1, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	s1.Payload.Entries = append(s1.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
+	if err := s1.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s2.ChangePassword("new pw"); !errors.Is(err, ErrConflict) {
+		t.Errorf("ChangePassword after a concurrent write: err = %v, want ErrConflict", err)
+	}
+
+	// The refusal must be total: s1's entry survives, and the password
+	// must not have moved.
+	s3, err := Open(path, "pw")
+	if err != nil {
+		t.Fatalf("vault no longer opens under the original password: %v", err)
+	}
+	defer s3.Close()
+	if len(s3.Payload.Entries) != 1 || s3.Payload.Entries[0].Name != "a.com" {
+		t.Errorf("vault contents after a refused rotation: %+v", s3.Payload.Entries)
+	}
+}
+
+// TestSaveAfterChangePasswordIsRefused covers the spent-Store guard.
+// The key held in memory no longer matches the file, so a Save would
+// re-encrypt under the password the user just replaced.
+func TestSaveAfterChangePasswordIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "old pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path, "old pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.ChangePassword("new pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "late.com", Secret: "x", Updated: entry.Now()})
+	if err := s.Save(); !errors.Is(err, ErrRekeyed) {
+		t.Errorf("Save() after ChangePassword: err = %v, want ErrRekeyed", err)
+	}
+	if err := s.ChangePassword("third pw"); !errors.Is(err, ErrRekeyed) {
+		t.Errorf("second ChangePassword: err = %v, want ErrRekeyed", err)
+	}
+
+	// The refused writes must have left the vault exactly as the
+	// rotation wrote it.
+	reopened, err := Open(path, "new pw")
+	if err != nil {
+		t.Fatalf("vault does not open under the rotated password: %v", err)
+	}
+	defer reopened.Close()
+	if len(reopened.Payload.Entries) != 0 {
+		t.Errorf("refused Save leaked an entry into the vault: %+v", reopened.Payload.Entries)
+	}
+	if _, err := Open(path, "third pw"); err == nil {
+		t.Error("a refused second rotation still changed the password")
+	}
+}
+
+// TestChangePasswordRecordsANonDurableRotation covers the window that
+// can strand a user outside their own vault. vault.WriteAtomic can
+// fail *after* the rename has installed the new file, meaning the
+// vault already requires the new password even though an error comes
+// back. ChangePassword must record the rotation anyway, so nothing
+// downstream tells the user to keep using a password that no longer
+// works.
+func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "old pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path, "old pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Install the new file, then fail — exactly what a directory sync
+	// failure does.
+	orig := writeAtomic
+	writeAtomic = func(p string, data []byte) error {
+		if writeErr := orig(p, data); writeErr != nil {
+			return writeErr
+		}
+		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
+	}
+	defer func() { writeAtomic = orig }()
+
+	err = s.ChangePassword("new pw")
+	if !errors.Is(err, vault.ErrNotDurable) {
+		t.Fatalf("ChangePassword: err = %v, want ErrNotDurable", err)
+	}
+
+	// The vault really does require the new password now.
+	if _, openErr := Open(path, "old pw"); openErr == nil {
+		t.Error("old password still opens the vault; the rename did commit")
+	}
+	rotated, openErr := Open(path, "new pw")
+	if openErr != nil {
+		t.Fatalf("new password does not open the vault: %v", openErr)
+	}
+	rotated.Close()
+
+	// And the Store knows it is spent, so a later Save cannot
+	// re-encrypt under the password that was just replaced.
+	if saveErr := s.Save(); !errors.Is(saveErr, ErrRekeyed) {
+		t.Errorf("Save() after a non-durable rotation: err = %v, want ErrRekeyed", saveErr)
 	}
 }

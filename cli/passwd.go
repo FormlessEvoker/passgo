@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/FormlessEvoker/passgo/store"
+	"github.com/FormlessEvoker/passgo/vault"
 )
 
 // runPasswd implements `passgo passwd` per SPECIFICATION.md §6:
@@ -53,7 +54,7 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 	newPassword, err := readReplacementPassword(newPasswordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		if errors.Is(err, ErrNoTTY) {
+		if errors.Is(err, ErrNoTTY) || errors.Is(err, ErrNoNewPasswordSource) {
 			return ExitUsage
 		}
 		return ExitGeneral
@@ -61,6 +62,15 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 
 	if err := s.ChangePassword(newPassword); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		if errors.Is(err, vault.ErrNotDurable) {
+			// The rename committed before the failure, so the vault
+			// already requires the new password. Saying only "error"
+			// here would send the user back to a password that no
+			// longer opens their vault.
+			fmt.Fprintln(os.Stderr, "IMPORTANT: the master password WAS changed — use the new one from now on.")
+			fmt.Fprintln(os.Stderr, "Only the directory sync failed, so the change may not survive a power loss.")
+			fmt.Fprintln(os.Stderr, "Verify with `passgo ls`, and re-run passwd if the vault still wants the old password.")
+		}
 		return ExitGeneral
 	}
 

@@ -27,6 +27,12 @@ import (
 // coordination if that's ever needed.
 var ErrConflict = errors.New("store: vault was modified since it was opened; re-run to see the latest changes")
 
+// writeAtomic indirects vault.WriteAtomic so tests can exercise the
+// committed-but-not-durable path (vault.ErrNotDurable), which cannot
+// be provoked naturally. That path decides whether a user is told
+// their password rotation happened, so it must be testable.
+var writeAtomic = vault.WriteAtomic
+
 // ErrRekeyed means Save was called on a Store whose vault has already
 // been re-encrypted under a new master password by ChangePassword.
 // The key this Store holds no longer matches the file on disk, so
@@ -129,7 +135,7 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := vault.WriteAtomic(s.path, fileBytes); err != nil {
+	if err := writeAtomic(s.path, fileBytes); err != nil {
 		return err
 	}
 	s.rawBytes = fileBytes
@@ -168,7 +174,15 @@ func (s *Store) ChangePassword(newPassword string) error {
 	if err != nil {
 		return err
 	}
-	if err := vault.WriteAtomic(s.path, fileBytes); err != nil {
+	if err := writeAtomic(s.path, fileBytes); err != nil {
+		if errors.Is(err, vault.ErrNotDurable) {
+			// The rename committed: the vault on disk already requires
+			// newPassword. Record the rotation before returning the
+			// error, so nothing downstream can treat this Store — or
+			// the file — as though the old password still applied.
+			s.rawBytes = fileBytes
+			s.rekeyed = true
+		}
 		return err
 	}
 	s.rawBytes = fileBytes

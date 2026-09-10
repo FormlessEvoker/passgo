@@ -292,6 +292,96 @@ func TestShowWrongMasterPasswordFails(t *testing.T) {
 	}
 }
 
+func TestRmForceDeletesEntry(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+
+	if code := Run([]string{"rm", "github.com", "-f"}); code != ExitOK {
+		t.Fatalf("rm -f exit code = %d, want %d", code, ExitOK)
+	}
+	if code := Run([]string{"get", "github.com"}); code != ExitNotFound {
+		t.Errorf("get after rm: exit code = %d, want %d (entry should be gone)", code, ExitNotFound)
+	}
+}
+
+func TestRmWithoutForcePromptsAndRespectsAnswer(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+
+	// "n" (the default-equivalent explicit no) leaves the entry alone.
+	withStdin(t, "n\n")
+	if code := Run([]string{"rm", "github.com"}); code != ExitOK {
+		t.Fatalf("rm (declined) exit code = %d, want %d", code, ExitOK)
+	}
+	if code := Run([]string{"get", "github.com"}); code != ExitOK {
+		t.Errorf("get after declined rm: exit code = %d, want %d (entry should remain)", code, ExitOK)
+	}
+
+	// "y" confirms the deletion.
+	withStdin(t, "y\n")
+	if code := Run([]string{"rm", "github.com"}); code != ExitOK {
+		t.Fatalf("rm (confirmed) exit code = %d, want %d", code, ExitOK)
+	}
+	if code := Run([]string{"get", "github.com"}); code != ExitNotFound {
+		t.Errorf("get after confirmed rm: exit code = %d, want %d (entry should be gone)", code, ExitNotFound)
+	}
+}
+
+func TestRmNoMatch(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	if code := Run([]string{"rm", "nope", "-f"}); code != ExitNotFound {
+		t.Errorf("rm with no match: exit code = %d, want %d", code, ExitNotFound)
+	}
+}
+
+func TestRmAmbiguousMatch(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "one", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "two", "-p"})
+
+	if code := Run([]string{"rm", "git", "-f"}); code != ExitAmbiguous {
+		t.Errorf("ambiguous rm: exit code = %d, want %d", code, ExitAmbiguous)
+	}
+	// Neither candidate should have been touched.
+	if code := Run([]string{"get", "github.com"}); code != ExitOK {
+		t.Errorf("get github.com after ambiguous rm: exit code = %d, want %d", code, ExitOK)
+	}
+	if code := Run([]string{"get", "gitlab.com"}); code != ExitOK {
+		t.Errorf("get gitlab.com after ambiguous rm: exit code = %d, want %d", code, ExitOK)
+	}
+}
+
+func TestRmDisambiguatedByUsername(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "example.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "example.com", "-u", "bob", "-p"})
+
+	if code := Run([]string{"rm", "example.com", "-u", "bob", "-f"}); code != ExitOK {
+		t.Fatalf("rm -u bob exit code = %d, want %d", code, ExitOK)
+	}
+	if code := Run([]string{"get", "example.com", "-u", "bob"}); code != ExitNotFound {
+		t.Errorf("get bob after rm: exit code = %d, want %d (entry should be gone)", code, ExitNotFound)
+	}
+	if code := Run([]string{"get", "example.com", "-u", "alice"}); code != ExitOK {
+		t.Errorf("get alice after rm bob: exit code = %d, want %d (entry should remain)", code, ExitOK)
+	}
+}
+
 func TestVaultFlagOverridesEnv(t *testing.T) {
 	t.Setenv("PASSGO_VAULT", "/should/not/be/used")
 	t.Setenv("PASSGO_MASTER", "correct horse battery staple")

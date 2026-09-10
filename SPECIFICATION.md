@@ -39,6 +39,13 @@ applications, and physical coercion.
   not distinguishable. No padding is applied in v1.
 - **Wrong password and corruption are indistinguishable.** A failed
   authentication tag means one or the other; the error message says so.
+- **Concurrent writers are detected, not prevented.** There is no lock file
+  or coordination between two `passgo` processes running at once. A command
+  that mutates the vault checks, right before writing, that the file on disk
+  still matches what it read at open — if a second process wrote in between,
+  the write is refused with exit code 1 rather than silently discarding one
+  side's change. This is an optimistic check, not a guarantee: it closes the
+  everyday "two terminals" case, not deliberate concurrent access.
 
 ---
 
@@ -127,7 +134,11 @@ byte exists so a future flag (compression, padding) can be added without moving
 any offset.
 
 A reader MUST verify the magic and reject an unknown format version with a clear
-message rather than attempting to parse.
+message rather than attempting to parse. It MUST also reject a nonzero
+reserved byte — accepting one means silently ignoring a flag a future version
+gave meaning to — and reject a ciphertext shorter than the 16-byte GCM tag
+before deriving a key: such a file can never authenticate regardless of
+password, so there is no reason to pay for the Argon2id derivation first.
 
 ### 3.2 Plaintext payload
 
@@ -159,6 +170,10 @@ The decrypted payload is UTF-8 JSON:
 `entries` is sorted by `name`, then `username`, on every write. This keeps
 diffs stable for anyone versioning the file.
 
+A reader MUST reject a payload whose `version` doesn't match the version it
+implements, rather than accepting it and risking a later write silently
+dropping fields a newer version added.
+
 Deferred, not in v1: a stable `id` independent of `name`, unknown-field
 preservation for forward compatibility (the format is unstable until v1.0, so
 there is nothing yet to stay compatible with), and generation metadata on the
@@ -189,6 +204,17 @@ Every write is atomic and never truncates the existing vault in place:
 
 If any step fails, the temporary file is removed and the original vault is left
 untouched.
+
+`init`'s no-overwrite guarantee (§6) is enforced the same way, but step 5 uses
+a create-only link instead of an unconditional rename: the temporary file is
+linked to the vault path rather than renamed over it, which fails atomically
+if the path already exists. A plain existence check beforehand would leave a
+window for a second `init` to land in between the check and the write; the
+link either creates the file or fails, with nothing in between.
+
+Every command that mutates the vault also re-reads the file immediately
+before this sequence and compares it against what it read at open, refusing
+to proceed if they differ — see "Concurrent writers" in §1.
 
 ---
 
@@ -297,14 +323,20 @@ are unchanged.
 | Code | Meaning |
 | --- | --- |
 | 0 | Success |
-| 1 | General error (I/O, vault exists, duplicate entry) |
+| 1 | General error (I/O, vault exists, duplicate entry, concurrent write conflict) |
 | 2 | Usage error (bad flags, no TTY available) |
 | 3 | Ambiguous query — multiple entries matched |
 | 4 | No matching entry |
-| 5 | Authentication failed — wrong master password or corrupted vault |
+| 5 | Authentication failed — wrong master password or corrupted ciphertext |
 
 Exit code 5 is distinct so scripts can tell "you typed it wrong" from "this
-entry does not exist."
+entry does not exist." It is scoped specifically to a failed AEAD
+authentication tag — the one failure mode where wrong password and corrupted
+ciphertext are genuinely indistinguishable (§1). A file that's structurally
+invalid before decryption is even attempted — bad magic, an unsupported
+version, a nonzero reserved byte, out-of-bounds KDF parameters, a ciphertext
+too short to hold a tag — is not ambiguous in that sense; those are general
+errors (exit code 1).
 
 ---
 

@@ -42,6 +42,10 @@ func runLs(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
+	// No sort here: store.Open returns entries in the order
+	// entry.Marshal last wrote them in, which is always sorted by
+	// name then username (entry.go). resolve() filters without
+	// reordering, so that sort order carries through unchanged.
 	matches := s.Payload.Entries
 	if query != "" {
 		matches = resolve(s.Payload.Entries, query, "")

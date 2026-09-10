@@ -22,19 +22,9 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 	query := args[0]
 	rest := args[1:]
 
-	var (
-		username string
-		force    bool
-	)
+	var force bool
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
-		case "-u", "--username":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "error: -u/--username requires a value")
-				return ExitUsage
-			}
-			i++
-			username = rest[i]
 		case "-f", "--force":
 			force = true
 		default:
@@ -58,21 +48,10 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	matches := resolve(s.Payload.Entries, query, username)
-	switch len(matches) {
-	case 0:
-		fmt.Fprintf(os.Stderr, "error: no entry matches %q\n", query)
-		return ExitNotFound
-	case 1:
-		// proceed
-	default:
-		fmt.Fprintln(os.Stderr, "error: multiple entries match:")
-		for _, e := range matches {
-			fmt.Fprintf(os.Stderr, "  %s\t%s\n", e.Name, e.Username)
-		}
-		return ExitAmbiguous
+	target, code, ok := resolveOne(s.Payload.Entries, query)
+	if !ok {
+		return code
 	}
-	target := matches[0]
 
 	if !force {
 		confirmed, err := confirm(fmt.Sprintf("Delete %s (%s)? [y/N] ", target.Name, target.Username))
@@ -95,14 +74,20 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 	return ExitOK
 }
 
-// removeEntry returns entries with the first element matching target
-// on both name and username (case-insensitive) removed. target always
-// comes from resolve() against this same slice, so it is guaranteed
-// to be present.
+// removeEntry returns entries with target removed, matched on name
+// alone — the entry's identity, per SPECIFICATION.md §3.2. target
+// always comes from resolveOne() against this same slice, so it is
+// guaranteed to be present exactly once.
+//
+// Only the first match is dropped, so a single rm can never delete
+// more than one entry even if the uniqueness invariant is somehow
+// violated.
 func removeEntry(entries []entry.Entry, target entry.Entry) []entry.Entry {
 	out := make([]entry.Entry, 0, len(entries)-1)
+	removed := false
 	for _, e := range entries {
-		if strings.EqualFold(e.Name, target.Name) && strings.EqualFold(e.Username, target.Username) {
+		if !removed && strings.EqualFold(e.Name, target.Name) {
+			removed = true
 			continue
 		}
 		out = append(out, e)

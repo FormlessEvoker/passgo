@@ -112,17 +112,48 @@ func TestAddDuplicateRejected(t *testing.T) {
 	}
 }
 
-func TestAddAllowsSameNameDifferentUsername(t *testing.T) {
+// TestAddRejectsDuplicateNameRegardlessOfUsername pins down the
+// identity rule in SPECIFICATION.md §3.2: name alone identifies an
+// entry, so a second entry with the same name is a duplicate even
+// when its username differs. Two accounts on one site are expected to
+// be given distinct names.
+func TestAddRejectsDuplicateNameRegardlessOfUsername(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
-	withStdin(t, "first\n")
-	if code := Run([]string{"add", "github.com", "-u", "one", "-p"}); code != ExitOK {
-		t.Fatalf("first add failed: %d", code)
+	withStdin(t, "a\n")
+	if code := Run([]string{"add", "github.com", "-u", "alice", "-p"}); code != ExitOK {
+		t.Fatalf("first add exit code = %d, want %d", code, ExitOK)
 	}
-	withStdin(t, "second\n")
-	if code := Run([]string{"add", "github.com", "-u", "two", "-p"}); code != ExitOK {
-		t.Errorf("add with a different username should succeed, got exit code %d", code)
+	withStdin(t, "b\n")
+	if code := Run([]string{"add", "github.com", "-u", "bob", "-p"}); code != ExitGeneral {
+		t.Errorf("add with duplicate name, different username: exit code = %d, want %d", code, ExitGeneral)
+	}
+}
+
+// TestAddDistinctNamesForSameSite is the supported way to hold two
+// accounts on one site under the §3.2 identity rule.
+func TestAddDistinctNamesForSameSite(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	if code := Run([]string{"add", "github.com/alice", "-u", "alice", "-p"}); code != ExitOK {
+		t.Fatalf("add github.com/alice exit code = %d, want %d", code, ExitOK)
+	}
+	withStdin(t, "b\n")
+	if code := Run([]string{"add", "github.com/work", "-u", "bob", "-p"}); code != ExitOK {
+		t.Fatalf("add github.com/work exit code = %d, want %d", code, ExitOK)
+	}
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"get", "github.com/work"})
+	})
+	if code != ExitOK {
+		t.Fatalf("get github.com/work exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.TrimSpace(out) != "b" {
+		t.Errorf("get github.com/work output = %q, want %q", out, "b")
 	}
 }
 
@@ -186,23 +217,53 @@ func TestGetAmbiguousMatch(t *testing.T) {
 	}
 }
 
-func TestGetDisambiguatedByUsername(t *testing.T) {
+// TestGetExactNameBeatsAmbiguousSubstring pins down the guarantee
+// SPECIFICATION.md §5 makes: because names are unique, the exact-match
+// stage can never return more than one entry, so an ambiguous
+// substring query is always resolvable by typing the exact name.
+func TestGetExactNameBeatsAmbiguousSubstring(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
 	withStdin(t, "a\n")
-	Run([]string{"add", "example.com", "-u", "alice", "-p"})
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
 	withStdin(t, "b\n")
-	Run([]string{"add", "example.com", "-u", "bob", "-p"})
+	Run([]string{"add", "github.com.backup", "-u", "bob", "-p"})
 
+	// The substring "github.com" matches both entries...
+	if code := Run([]string{"get", "github"}); code != ExitAmbiguous {
+		t.Fatalf("get github exit code = %d, want %d", code, ExitAmbiguous)
+	}
+
+	// ...but the exact name resolves to exactly one, with no filter flag.
 	out, code := captureStdout(t, func() int {
-		return Run([]string{"get", "example.com", "-u", "bob"})
+		return Run([]string{"get", "github.com"})
 	})
 	if code != ExitOK {
-		t.Fatalf("get -u bob exit code = %d, want %d", code, ExitOK)
+		t.Fatalf("get github.com exit code = %d, want %d", code, ExitOK)
 	}
-	if strings.TrimSpace(out) != "b" {
-		t.Errorf("get -u bob output = %q, want %q", out, "b")
+	if strings.TrimSpace(out) != "a" {
+		t.Errorf("get github.com output = %q, want %q", out, "a")
+	}
+}
+
+// TestUsernameFilterFlagIsGone guards the §5 decision to drop
+// field-specific filter flags from the query-taking commands. -u is
+// now a field-setting flag on add/edit only, so these must reject it
+// as unknown rather than silently ignoring it.
+func TestUsernameFilterFlagIsGone(t *testing.T) {
+	for _, cmd := range []string{"get", "show", "rm"} {
+		t.Run(cmd, func(t *testing.T) {
+			withTempVault(t)
+			Run([]string{"init"})
+
+			withStdin(t, "a\n")
+			Run([]string{"add", "example.com", "-u", "alice", "-p"})
+
+			if code := Run([]string{cmd, "example.com", "-u", "alice"}); code != ExitUsage {
+				t.Errorf("%s -u: exit code = %d, want %d", cmd, code, ExitUsage)
+			}
+		})
 	}
 }
 
@@ -259,26 +320,6 @@ func TestShowAmbiguousMatch(t *testing.T) {
 
 	if code := Run([]string{"show", "git"}); code != ExitAmbiguous {
 		t.Errorf("ambiguous show: exit code = %d, want %d", code, ExitAmbiguous)
-	}
-}
-
-func TestShowDisambiguatedByUsername(t *testing.T) {
-	withTempVault(t)
-	Run([]string{"init"})
-
-	withStdin(t, "a\n")
-	Run([]string{"add", "example.com", "-u", "alice", "-p"})
-	withStdin(t, "b\n")
-	Run([]string{"add", "example.com", "-u", "bob", "-p"})
-
-	out, code := captureStdout(t, func() int {
-		return Run([]string{"show", "example.com", "-u", "bob"})
-	})
-	if code != ExitOK {
-		t.Fatalf("show -u bob exit code = %d, want %d", code, ExitOK)
-	}
-	if !strings.Contains(out, "bob") {
-		t.Errorf("show -u bob output = %q, want it to contain %q", out, "bob")
 	}
 }
 
@@ -362,23 +403,26 @@ func TestRmAmbiguousMatch(t *testing.T) {
 	}
 }
 
-func TestRmDisambiguatedByUsername(t *testing.T) {
+// TestRmRemovesOnlyTheMatchedEntry checks that removeEntry drops the
+// resolved entry and nothing else, now that it keys on name alone.
+func TestRmRemovesOnlyTheMatchedEntry(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
 	withStdin(t, "a\n")
-	Run([]string{"add", "example.com", "-u", "alice", "-p"})
+	Run([]string{"add", "example.com/alice", "-u", "shared", "-p"})
 	withStdin(t, "b\n")
-	Run([]string{"add", "example.com", "-u", "bob", "-p"})
+	Run([]string{"add", "example.com/bob", "-u", "shared", "-p"})
 
-	if code := Run([]string{"rm", "example.com", "-u", "bob", "-f"}); code != ExitOK {
-		t.Fatalf("rm -u bob exit code = %d, want %d", code, ExitOK)
+	if code := Run([]string{"rm", "example.com/bob", "-f"}); code != ExitOK {
+		t.Fatalf("rm exit code = %d, want %d", code, ExitOK)
 	}
-	if code := Run([]string{"get", "example.com", "-u", "bob"}); code != ExitNotFound {
-		t.Errorf("get bob after rm: exit code = %d, want %d (entry should be gone)", code, ExitNotFound)
+	if code := Run([]string{"get", "example.com/bob"}); code != ExitNotFound {
+		t.Errorf("get removed entry: exit code = %d, want %d", code, ExitNotFound)
 	}
-	if code := Run([]string{"get", "example.com", "-u", "alice"}); code != ExitOK {
-		t.Errorf("get alice after rm bob: exit code = %d, want %d (entry should remain)", code, ExitOK)
+	// The sibling shares a username but has its own name, so it survives.
+	if code := Run([]string{"get", "example.com/alice"}); code != ExitOK {
+		t.Errorf("get surviving entry: exit code = %d, want %d", code, ExitOK)
 	}
 }
 
@@ -532,21 +576,26 @@ func TestLsQueryDimensions(t *testing.T) {
 	}
 }
 
-// TestLsOutputIsSortedByNameThenUsername pins down that ls need not
-// sort its own output: entries come back from store.Open already
-// sorted by name then username, per the invariant entry.Marshal
-// enforces on every write (entry.go). Entries here are added in
-// reverse-sorted order specifically to catch a regression if that
-// invariant ever breaks, or if ls started relying on insertion order
-// instead.
-func TestLsOutputIsSortedByNameThenUsername(t *testing.T) {
+// TestLsOutputIsSortedByName pins down that ls need not sort its own
+// output: entries come back from store.Open already sorted by name
+// then username, per the invariant entry.Marshal enforces on every
+// write (entry.go). Entries here are added in reverse-sorted order
+// specifically to catch a regression if that invariant ever breaks,
+// or if ls started relying on insertion order instead.
+//
+// Only the name component is exercised here. Names are unique under
+// SPECIFICATION.md §3.2, so `add` can no longer produce the duplicate
+// names the username tiebreak exists to order; that tiebreak is
+// covered directly in entry.TestMarshalSortsByNameThenUsername, where
+// such a payload can still be constructed.
+func TestLsOutputIsSortedByName(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
 	withStdin(t, "a\n")
 	Run([]string{"add", "zsite.com", "-p"})
 	withStdin(t, "b\n")
-	Run([]string{"add", "asite.com", "-u", "b", "-p"})
+	Run([]string{"add", "msite.com", "-u", "b", "-p"})
 	withStdin(t, "c\n")
 	Run([]string{"add", "asite.com", "-u", "a", "-p"})
 
@@ -557,7 +606,7 @@ func TestLsOutputIsSortedByNameThenUsername(t *testing.T) {
 		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
 	}
 
-	wantOrder := []string{"asite.com", "asite.com", "zsite.com"}
+	wantOrder := []string{"asite.com", "msite.com", "zsite.com"}
 	var gotOrder []string
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		gotOrder = append(gotOrder, strings.Fields(line)[0])

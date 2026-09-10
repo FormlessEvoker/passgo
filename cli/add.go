@@ -99,9 +99,12 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
+	// name is the entry's identity (SPECIFICATION.md §3.2), so a
+	// collision on name alone is a duplicate — username plays no part.
+	// Two accounts on one site are two entries with distinct names.
 	for _, e := range s.Payload.Entries {
-		if strings.EqualFold(e.Name, name) && strings.EqualFold(e.Username, username) {
-			fmt.Fprintf(os.Stderr, "error: an entry for %q already exists with that username\n", name)
+		if strings.EqualFold(e.Name, name) {
+			fmt.Fprintf(os.Stderr, "error: an entry named %q already exists\n", name)
 			return ExitGeneral
 		}
 	}

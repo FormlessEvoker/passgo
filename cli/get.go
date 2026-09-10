@@ -16,19 +16,9 @@ func runGet(vaultPath, passwordFile string, args []string) int {
 	query := args[0]
 	rest := args[1:]
 
-	var (
-		username string
-		clip     bool
-	)
+	var clip bool
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
-		case "-u", "--username":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "error: -u/--username requires a value")
-				return ExitUsage
-			}
-			i++
-			username = rest[i]
 		case "--clip":
 			clip = true
 		default:
@@ -52,22 +42,12 @@ func runGet(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	matches := resolve(s.Payload.Entries, query, username)
-	switch len(matches) {
-	case 0:
-		fmt.Fprintf(os.Stderr, "error: no entry matches %q\n", query)
-		return ExitNotFound
-	case 1:
-		// proceed
-	default:
-		fmt.Fprintln(os.Stderr, "error: multiple entries match:")
-		for _, e := range matches {
-			fmt.Fprintf(os.Stderr, "  %s\t%s\n", e.Name, e.Username)
-		}
-		return ExitAmbiguous
+	match, code, ok := resolveOne(s.Payload.Entries, query)
+	if !ok {
+		return code
 	}
 
-	secret := matches[0].Secret
+	secret := match.Secret
 
 	if clip {
 		if err := copyToClipboard(secret); err != nil {

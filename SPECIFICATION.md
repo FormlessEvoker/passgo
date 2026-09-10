@@ -161,14 +161,35 @@ The decrypted payload is UTF-8 JSON:
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `name` | yes | What the entry is for — a site, a token description, a vault name. Unique, matched case-insensitively. Also the entry's identity: renaming an entry means editing this field directly. |
-| `username` | no | A name may have several entries with different usernames. |
+| `name` | yes | What the entry is for — a site, a token description, a vault name. **The entry's identity: unique across the vault, compared case-insensitively.** Mutable, but only through `mv` (§6), never as an ordinary field edit. |
+| `username` | no | The account name at that site. Descriptive data with no identity role — two entries may share a username freely, and it is edited like any other field. |
 | `secret` | yes | The password, token, or key. Not called `password` because it is not always one. |
 | `notes` | no | Free text. |
 | `updated` | yes | RFC 3339, UTC. Set on every write, including creation. |
 
+`name` alone is the identity, and nothing else shares that role. An earlier
+revision of this document said `name` was unique while also saying a name could
+have several entries distinguished by `username` — a contradiction the
+implementation resolved by keying entries on the `(name, username)` pair. That
+pairing is gone: two accounts on the same site are two entries with distinct
+names (`github.com/alice`, `github.com/work`), the same way a filesystem
+distinguishes two files in a directory.
+
+Making `name` uniquely identifying is what lets a query resolve deterministically
+without field-specific filter flags — see §5. The cost is that multiple accounts
+on one site need a naming convention; the benefit is that every entry has exactly
+one address, and an exact name never resolves to more than one thing.
+
+Uniqueness is enforced on write — `add` and `mv` reject a collision — and is
+not re-checked on read, so the guarantee holds for every vault this version has
+written. The format permitted duplicate names before this rule existed; such a
+vault is out of contract rather than supported, which is what the unstable
+pre-1.0 format version allows.
+
 `entries` is sorted by `name`, then `username`, on every write. This keeps
-diffs stable for anyone versioning the file.
+diffs stable for anyone versioning the file. The `username` tiebreak never
+fires while names are unique; it is retained so the ordering is total rather
+than relying on the sort being stable.
 
 A reader MUST reject a payload whose `version` doesn't match the version it
 implements, rather than accepting it and risking a later write silently
@@ -177,7 +198,8 @@ dropping fields a newer version added.
 Deferred, not in v1: a stable `id` independent of `name`, unknown-field
 preservation for forward compatibility (the format is unstable until v1.0, so
 there is nothing yet to stay compatible with), and generation metadata on the
-entry (see §7).
+entry (see §7). The word `id` is reserved for that deferred opaque identifier
+and is deliberately not used for the human-facing label, which is `name`.
 
 ### 3.3 Location and permissions
 
@@ -274,8 +296,23 @@ Outcomes:
   recently updated." Silently returning the wrong password is the worst failure
   mode this tool has.
 
-`-u/--username` narrows a query before resolution, so
-`passgo get github.com -u me@example.com` disambiguates without an extra flag.
+Because `name` uniquely identifies an entry (§3.2), stage 1 can never return
+more than one match. Ambiguity is therefore exclusively a property of the
+stage-2 substring search, which gives exit code 3 a guarantee it would
+otherwise lack: **an ambiguous query is always resolvable by typing the exact
+name.** The error is never a dead end, so no escape hatch is needed for it.
+
+There are deliberately no field-specific filter flags — no `-u` to narrow by
+username, and by the same reasoning no `-n` to narrow by notes. A positional
+query that already searches `name`, `username`, and `notes`, plus flags that
+filter those same fields, would be two overlapping mechanisms for one job; the
+flags earn their keep only when an exact name can be ambiguous, and under §3.2
+it cannot. Commands that write to a specific field (`add`, `edit`) still take
+`-u/--username`, but there it sets that field's value rather than filtering.
+This is a personal tool, not a database query language.
+
+To find every entry sharing a username, use `ls <query>` — the substring stage
+searches usernames, and `ls` is the command for browsing rather than acting.
 
 ---
 
@@ -295,7 +332,8 @@ the entry's `secret`), `-g --gen [length]`, `-n --notes`.
 
 Exactly one of `-p` or `-g` is required. `-g` prints the generated password to
 stdout on success so it can be piped somewhere on first use. Rejects a
-duplicate `(name, username)` pair with exit code 1.
+duplicate `name` — compared case-insensitively, ignoring `username` — with exit
+code 1, since `name` is the entry's identity (§3.2).
 
 ### `passgo get <query> [--clip]`
 Prints the password alone to stdout — no label, no field name, no quoting. A
@@ -316,9 +354,26 @@ Lists matching entries as an aligned table of `name`, `username`, and
 one entry per line and stable, so it composes with `grep` and `awk`.
 
 ### `passgo edit <query> [flags]`
-Same field flags as `add`, plus `--name` to rename the entry in place. Only
-the flags given are changed; `-p` prompts for a new password and `-g`
-generates one. Refreshes `updated`.
+`-u --username`, `-p --password`, `-g --gen [length]`, `-n --notes` — the same
+field flags as `add`, with the same meanings. Only the flags given are changed;
+`-p` prompts for a new password and `-g` generates one. Refreshes `updated`.
+
+`edit` does not change `name`. Identity changes go through `mv`, which keeps
+the two kinds of operation visually distinct: `edit` updates what an entry
+*contains*, `mv` changes what it *is*. Folding a rename into `edit` as a
+`--name` flag would also collide with `-n/--notes` on its short form, and
+distinguishing them only by letter case (`-N` vs `-n`) is a footgun in a
+command that writes to a vault.
+
+### `passgo mv <query> <new-name>`
+Renames the entry matched by `<query>` to `<new-name>`, leaving every other
+field untouched, and refreshes `updated`. Fails with exit code 1 if an entry
+with `<new-name>` already exists, compared case-insensitively — the same
+uniqueness rule `add` enforces.
+
+Renaming in place rather than requiring `add` + `rm` matters because the
+alternative round-trips the secret through `get` and the shell to preserve it,
+which is precisely the exposure this tool exists to avoid.
 
 ### `passgo rm <query>`
 Prompts for confirmation unless `-f/--force` is given.
@@ -369,6 +424,13 @@ vault is solid.
 
 **Session agent.** A short-lived cached key so the master password is not
 retyped every command. Only if retyping actually proves annoying in daily use.
+
+**Stable opaque `id`.** An identifier independent of `name`, so an entry keeps
+its identity across a `mv` — the prerequisite for entry history, which wants to
+follow an entry through renames. `name` serves as the identity in v1 because a
+vault this size has nothing that references an entry from elsewhere, so there
+are no stale references for a rename to break. The field name `id` is reserved
+for this and used for nothing else (§3.2).
 
 **Also deferred:** import and export, TOTP, clipboard auto-clear, vault padding
 to hide size, and entry history.

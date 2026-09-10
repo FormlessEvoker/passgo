@@ -26,20 +26,9 @@ func runShow(vaultPath, passwordFile string, args []string) int {
 	query := args[0]
 	rest := args[1:]
 
-	var username string
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "-u", "--username":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "error: -u/--username requires a value")
-				return ExitUsage
-			}
-			i++
-			username = rest[i]
-		default:
-			fmt.Fprintf(os.Stderr, "error: unknown flag %q\n", rest[i])
-			return ExitUsage
-		}
+	for _, arg := range rest {
+		fmt.Fprintf(os.Stderr, "error: unknown flag %q\n", arg)
+		return ExitUsage
 	}
 
 	password, err := readPassword("Master password: ", passwordFile)
@@ -57,22 +46,12 @@ func runShow(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	matches := resolve(s.Payload.Entries, query, username)
-	switch len(matches) {
-	case 0:
-		fmt.Fprintf(os.Stderr, "error: no entry matches %q\n", query)
-		return ExitNotFound
-	case 1:
-		// proceed
-	default:
-		fmt.Fprintln(os.Stderr, "error: multiple entries match:")
-		for _, e := range matches {
-			fmt.Fprintf(os.Stderr, "  %s\t%s\n", e.Name, e.Username)
-		}
-		return ExitAmbiguous
+	match, code, ok := resolveOne(s.Payload.Entries, query)
+	if !ok {
+		return code
 	}
 
-	printEntryDetail(os.Stdout, matches[0])
+	printEntryDetail(os.Stdout, match)
 	return ExitOK
 }
 

@@ -4,19 +4,26 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
 
-// ErrNoTTY means /dev/tty could not be opened and $PASSGO_MASTER is
-// not set, so there is no way to read the master password. Per
-// SPECIFICATION.md §4, this is a usage error, not read from stdin.
+// ErrNoTTY means /dev/tty could not be opened and there is no other
+// way to read the master password ($PASSGO_MASTER is not set and no
+// password file was given). Per SPECIFICATION.md §4, this is a usage
+// error, not read from stdin.
 var ErrNoTTY = errors.New("no TTY available and $PASSGO_MASTER is not set")
 
-// readPassword returns the master password: $PASSGO_MASTER if set
-// (documented as discouraged — for scripting and tests only), otherwise
-// a single prompt read from /dev/tty with echo disabled.
-func readPassword(prompt string) (string, error) {
+// readPassword returns the master password. In order of precedence:
+// passwordFile if non-empty (from --master-password-file or
+// $PASSGO_MASTER_FILE), then $PASSGO_MASTER (documented as
+// discouraged — for scripting and tests only), otherwise a single
+// prompt read from /dev/tty with echo disabled.
+func readPassword(prompt, passwordFile string) (string, error) {
+	if passwordFile != "" {
+		return readPasswordFile(passwordFile)
+	}
 	if pw, ok := os.LookupEnv("PASSGO_MASTER"); ok {
 		return pw, nil
 	}
@@ -24,9 +31,12 @@ func readPassword(prompt string) (string, error) {
 }
 
 // readNewPassword prompts twice, as `init` and `passwd` require, and
-// fails if the two entries don't match. $PASSGO_MASTER short-circuits
-// both prompts, same as readPassword.
-func readNewPassword() (string, error) {
+// fails if the two entries don't match. passwordFile and
+// $PASSGO_MASTER short-circuit both prompts, same as readPassword.
+func readNewPassword(passwordFile string) (string, error) {
+	if passwordFile != "" {
+		return readPasswordFile(passwordFile)
+	}
 	if pw, ok := os.LookupEnv("PASSGO_MASTER"); ok {
 		return pw, nil
 	}
@@ -42,6 +52,26 @@ func readNewPassword() (string, error) {
 		return "", errors.New("passwords did not match")
 	}
 	return p1, nil
+}
+
+// readPasswordFile reads the master password from path: the file's
+// contents with a single trailing newline stripped, same convention
+// as ssh-keygen passphrase files and similar tools. Warns, rather
+// than refusing, if the file is readable by group or other — same
+// leniency vault.ReadFile already gives the vault file itself.
+func readPasswordFile(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode().Perm()&0o044 != 0 {
+		fmt.Fprintf(os.Stderr, "warning: %s is readable by group or other; consider chmod 600\n", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(data), "\r\n"), nil
 }
 
 // promptTTY reads a line from /dev/tty with echo disabled, regardless

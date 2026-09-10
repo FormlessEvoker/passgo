@@ -22,7 +22,8 @@ Usage:
   passgo --version | --help
 
 Global flags:
-  --vault <path>   Use this vault file instead of the resolved default.
+  --vault <path>                  Use this vault file instead of the resolved default.
+  --master-password-file <path>   Read the master password from this file instead of prompting.
 
 See SPECIFICATION.md for the full command reference.
 `
@@ -30,7 +31,7 @@ See SPECIFICATION.md for the full command reference.
 // Run parses args (os.Args[1:]) and executes the requested subcommand,
 // returning the process exit code.
 func Run(args []string) int {
-	vaultPath, rest, err := extractGlobalFlags(args)
+	vaultPath, passwordFile, rest, err := extractGlobalFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return ExitUsage
@@ -62,11 +63,11 @@ func Run(args []string) int {
 
 	switch cmd {
 	case "init":
-		return runInit(vaultPath, cmdArgs)
+		return runInit(vaultPath, passwordFile, cmdArgs)
 	case "add":
-		return runAdd(vaultPath, cmdArgs)
+		return runAdd(vaultPath, passwordFile, cmdArgs)
 	case "get":
-		return runGet(vaultPath, cmdArgs)
+		return runGet(vaultPath, passwordFile, cmdArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", cmd)
 		printUsage(os.Stderr)
@@ -74,22 +75,34 @@ func Run(args []string) int {
 	}
 }
 
-// extractGlobalFlags pulls --vault <path> out of args regardless of
-// position, returning the vault path (empty if not given) and the
-// remaining args in their original order otherwise.
-func extractGlobalFlags(args []string) (vaultPath string, rest []string, err error) {
+// extractGlobalFlags pulls --vault <path> and --master-password-file
+// <path> out of args regardless of position, returning each (empty if
+// not given) and the remaining args in their original order
+// otherwise. --master-password-file falls back to $PASSGO_MASTER_FILE
+// when the flag is absent.
+func extractGlobalFlags(args []string) (vaultPath, passwordFile string, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--vault" {
+		switch args[i] {
+		case "--vault":
 			if i+1 >= len(args) {
-				return "", nil, errors.New("--vault requires a path argument")
+				return "", "", nil, errors.New("--vault requires a path argument")
 			}
 			vaultPath = args[i+1]
 			i++
-			continue
+		case "--master-password-file":
+			if i+1 >= len(args) {
+				return "", "", nil, errors.New("--master-password-file requires a path argument")
+			}
+			passwordFile = args[i+1]
+			i++
+		default:
+			rest = append(rest, args[i])
 		}
-		rest = append(rest, args[i])
 	}
-	return vaultPath, rest, nil
+	if passwordFile == "" {
+		passwordFile = os.Getenv("PASSGO_MASTER_FILE")
+	}
+	return vaultPath, passwordFile, rest, nil
 }
 
 func printUsage(w io.Writer) {

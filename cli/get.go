@@ -8,7 +8,7 @@ import (
 	"github.com/FormlessEvoker/passgo/store"
 )
 
-func runGet(vaultPath string, args []string) int {
+func runGet(vaultPath, passwordFile string, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: get requires a <query> argument")
 		return ExitUsage
@@ -37,7 +37,7 @@ func runGet(vaultPath string, args []string) int {
 		}
 	}
 
-	password, err := readPassword("Master password: ")
+	password, err := readPassword("Master password: ", passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if errors.Is(err, ErrNoTTY) {

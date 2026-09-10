@@ -12,7 +12,7 @@ import (
 	"github.com/FormlessEvoker/passgo/store"
 )
 
-func runAdd(vaultPath string, args []string) int {
+func runAdd(vaultPath, passwordFile string, args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "error: add requires a <name> argument")
 		return ExitUsage
@@ -84,7 +84,7 @@ func runAdd(vaultPath string, args []string) int {
 		secret = gen
 	}
 
-	password, err := readPassword("Master password: ")
+	password, err := readPassword("Master password: ", passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if errors.Is(err, ErrNoTTY) {

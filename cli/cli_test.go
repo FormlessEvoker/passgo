@@ -227,3 +227,57 @@ func TestVaultFlagOverridesEnv(t *testing.T) {
 		t.Errorf("vault not created at --vault path: %v", err)
 	}
 }
+
+// writePasswordFile writes text as the contents of a fresh temp file
+// and returns its path, for exercising --master-password-file /
+// $PASSGO_MASTER_FILE without $PASSGO_MASTER set at all.
+func writePasswordFile(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestMasterPasswordFileFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+
+	if code := Run([]string{"--master-password-file", pwFile, "init"}); code != ExitOK {
+		t.Fatalf("init with --master-password-file failed: %d", code)
+	}
+
+	if code := Run([]string{"--master-password-file", pwFile, "get", "anything"}); code != ExitNotFound {
+		t.Errorf("get with --master-password-file: exit code = %d, want %d (auth should have succeeded)", code, ExitNotFound)
+	}
+}
+
+func TestMasterPasswordFileEnvFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+	t.Setenv("PASSGO_MASTER_FILE", pwFile)
+
+	if code := Run([]string{"init"}); code != ExitOK {
+		t.Fatalf("init with $PASSGO_MASTER_FILE failed: %d", code)
+	}
+}
+
+func TestMasterPasswordFileOverridesEnvVar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	t.Setenv("PASSGO_MASTER", "wrong password")
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+
+	if code := Run([]string{"--master-password-file", pwFile, "init"}); code != ExitOK {
+		t.Fatalf("init failed: %d", code)
+	}
+	// If --master-password-file had lost precedence to $PASSGO_MASTER,
+	// this get would fail authentication instead of simply not finding
+	// the (nonexistent) entry.
+	if code := Run([]string{"--master-password-file", pwFile, "get", "anything"}); code != ExitNotFound {
+		t.Errorf("get: exit code = %d, want %d (--master-password-file should win over $PASSGO_MASTER)", code, ExitNotFound)
+	}
+}

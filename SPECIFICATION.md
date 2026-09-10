@@ -229,12 +229,25 @@ correctly while stdout is a pipe.
 The master password MUST NOT be accepted as a command-line flag under any
 circumstances — arguments are visible in `ps` output and land in shell history.
 
-`$PASSGO_MASTER` is honoured when set, for scripting and tests only. It is
-documented as discouraged: environment variables are readable via `/proc` on
-Linux and are inherited by child processes.
+`--master-password-file <path>` (or `$PASSGO_MASTER_FILE`) reads the master
+password from a file instead of prompting: the file's contents with one
+trailing newline stripped, the same convention `ssh-keygen` passphrase files
+use. This is the preferred option for scripting and tests — the secret lives
+on disk under normal file permissions rather than in the environment. If the
+file is readable by group or other, a warning is written to stderr (not
+fatal), the same leniency given to the vault file itself in §3.
 
-If no TTY is available and `$PASSGO_MASTER` is unset, the command fails with
-exit code 2 rather than silently reading from stdin.
+`$PASSGO_MASTER` is honoured when set and no password file is given, for
+scripting and tests only. It is documented as more discouraged than the file
+option above: environment variables are readable via `/proc` on Linux and are
+inherited by child processes.
+
+Precedence when more than one is available: `--master-password-file` /
+`$PASSGO_MASTER_FILE`, then `$PASSGO_MASTER`, then the TTY prompt.
+
+If no TTY is available and neither the password file nor `$PASSGO_MASTER` is
+set, the command fails with exit code 2 rather than silently reading from
+stdin.
 
 Each command performs exactly one derive-and-unlock. There is no session,
 agent, or cached key in v1 — the master password is entered every time. At the
@@ -268,7 +281,8 @@ Outcomes:
 
 ## 6. Commands
 
-Global flags: `--vault <path>`, `--help`, `--version`.
+Global flags: `--vault <path>`, `--master-password-file <path>`, `--help`,
+`--version`.
 
 ### `passgo init`
 Creates a new vault at the resolved path. Prompts for the master password

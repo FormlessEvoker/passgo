@@ -85,9 +85,9 @@ func readPasswordFile(path string, warn io.Writer) (string, error) {
 func stripOneTrailingNewline(s string) string {
 	if strings.HasSuffix(s, "\n") {
 		s = s[:len(s)-1]
-	}
-	if strings.HasSuffix(s, "\r") {
-		s = s[:len(s)-1]
+		if strings.HasSuffix(s, "\r") {
+			s = s[:len(s)-1]
+		}
 	}
 	return s
 }

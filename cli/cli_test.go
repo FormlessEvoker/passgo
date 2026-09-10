@@ -326,6 +326,7 @@ func TestStripOneTrailingNewline(t *testing.T) {
 		"secret":       "secret",
 		"secret\n\n":   "secret\n",
 		"secret\r\n\n": "secret\r\n",
+		"secret\r":     "secret\r", // no LF was removed, so the lone CR stays
 	}
 	for in, want := range cases {
 		if got := stripOneTrailingNewline(in); got != want {

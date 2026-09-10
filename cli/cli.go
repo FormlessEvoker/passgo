@@ -18,10 +18,10 @@ const usage = `passgo — a small, local-first password manager
 Usage:
   passgo init
   passgo add <name> [-u username] (-p | -g [length]) [-n notes]
-  passgo get <query> [-u username] [--clip]
-  passgo show <query> [-u username]
+  passgo get <query> [--clip]
+  passgo show <query>
   passgo ls [query]
-  passgo rm <query> [-u username] [-f]
+  passgo rm <query> [-f]
   passgo --version | --help
 
 Global flags:

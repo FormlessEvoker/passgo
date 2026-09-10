@@ -48,7 +48,7 @@ func runLs(vaultPath, passwordFile string, args []string) int {
 	// reordering, so that sort order carries through unchanged.
 	matches := s.Payload.Entries
 	if query != "" {
-		matches = resolve(s.Payload.Entries, query, "")
+		matches = resolve(s.Payload.Entries, query)
 	}
 
 	printEntryTable(os.Stdout, matches)

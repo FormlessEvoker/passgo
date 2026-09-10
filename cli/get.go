@@ -57,10 +57,6 @@ func runGet(vaultPath, passwordFile string, args []string) int {
 		return ExitOK
 	}
 
-	if isTTY(os.Stdout) {
-		fmt.Println(secret)
-	} else {
-		fmt.Print(secret)
-	}
+	printSecret(secret)
 	return ExitOK
 }

@@ -77,7 +77,7 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 	}
 
 	if flags.wantGen {
-		fmt.Println(secret)
+		printSecret(secret)
 	}
 	return ExitOK
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/FormlessEvoker/passgo/crypto"
 )
 
 // withTempVault points PASSGO_VAULT at a fresh temp path and sets
@@ -763,6 +765,125 @@ func TestAddRejectsEmptyName(t *testing.T) {
 	withStdin(t, "a\n")
 	if code := Run([]string{"add", "", "-p"}); code != ExitUsage {
 		t.Errorf("add with empty name: exit code = %d, want %d", code, ExitUsage)
+	}
+}
+
+func TestGenDefaultLength(t *testing.T) {
+	withTempVault(t)
+
+	out, code := captureStdout(t, func() int { return Run([]string{"gen"}) })
+	if code != ExitOK {
+		t.Fatalf("gen exit code = %d, want %d", code, ExitOK)
+	}
+	if got := len(strings.TrimSpace(out)); got != crypto.DefaultGenLength {
+		t.Errorf("generated length = %d, want %d", got, crypto.DefaultGenLength)
+	}
+}
+
+func TestGenExplicitLength(t *testing.T) {
+	withTempVault(t)
+
+	out, code := captureStdout(t, func() int { return Run([]string{"gen", "48"}) })
+	if code != ExitOK {
+		t.Fatalf("gen 48 exit code = %d, want %d", code, ExitOK)
+	}
+	if got := len(strings.TrimSpace(out)); got != 48 {
+		t.Errorf("generated length = %d, want 48", got)
+	}
+}
+
+func TestGenUsesTheSpecifiedAlphabet(t *testing.T) {
+	withTempVault(t)
+
+	out, code := captureStdout(t, func() int { return Run([]string{"gen", "200"}) })
+	if code != ExitOK {
+		t.Fatalf("gen exit code = %d, want %d", code, ExitOK)
+	}
+	for _, r := range strings.TrimSpace(out) {
+		if !strings.ContainsRune(crypto.GenAlphabet, r) {
+			t.Errorf("generated password contains %q, which is outside GenAlphabet", r)
+		}
+	}
+}
+
+func TestGenProducesDifferentPasswords(t *testing.T) {
+	withTempVault(t)
+
+	first, _ := captureStdout(t, func() int { return Run([]string{"gen"}) })
+	second, _ := captureStdout(t, func() int { return Run([]string{"gen"}) })
+	if strings.TrimSpace(first) == strings.TrimSpace(second) {
+		t.Errorf("two gen runs produced the same password: %q", strings.TrimSpace(first))
+	}
+}
+
+func TestGenRejectsBadLength(t *testing.T) {
+	withTempVault(t)
+
+	for _, args := range [][]string{
+		{"gen", "0"},
+		{"gen", "-4"},
+		{"gen", "abc"},
+		{"gen", "3.5"},
+		{"gen", "20", "30"},
+	} {
+		if code := Run(args); code != ExitUsage {
+			t.Errorf("Run(%q): exit code = %d, want %d", args, code, ExitUsage)
+		}
+	}
+}
+
+// TestGenNeedsNoVault pins down the §6 guarantee that gen is a
+// standalone generator: it must run with no vault present and, more
+// pointedly, with no vault path resolvable at all.
+func TestGenNeedsNoVault(t *testing.T) {
+	// Point every source ResolvePath consults at nothing, so a command
+	// that tried to resolve a vault here would fail.
+	t.Setenv("PASSGO_VAULT", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("HOME", "")
+	t.Setenv("PASSGO_MASTER", "")
+
+	out, code := captureStdout(t, func() int { return Run([]string{"gen"}) })
+	if code != ExitOK {
+		t.Fatalf("gen with no resolvable vault: exit code = %d, want %d", code, ExitOK)
+	}
+	if len(strings.TrimSpace(out)) != crypto.DefaultGenLength {
+		t.Errorf("generated length = %d, want %d", len(strings.TrimSpace(out)), crypto.DefaultGenLength)
+	}
+}
+
+// TestSecretsOmitTrailingNewlineWhenPiped covers the §6 rule for every
+// path that writes a secret to stdout. captureStdout redirects to a
+// pipe, so isTTY is false throughout — exactly the case the rule is
+// about.
+func TestSecretsOmitTrailingNewlineWhenPiped(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "known\n")
+	Run([]string{"add", "example.com", "-p"})
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"gen", []string{"gen"}},
+		{"get", []string{"get", "example.com"}},
+		{"add -g", []string{"add", "fresh.example", "-g"}},
+		{"edit -g", []string{"edit", "example.com", "-g"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			out, code := captureStdout(t, func() int { return Run(c.args) })
+			if code != ExitOK {
+				t.Fatalf("%s exit code = %d, want %d", c.name, code, ExitOK)
+			}
+			if out == "" {
+				t.Fatalf("%s wrote nothing to stdout", c.name)
+			}
+			if strings.HasSuffix(out, "\n") {
+				t.Errorf("%s wrote a trailing newline to a pipe: %q", c.name, out)
+			}
+		})
 	}
 }
 

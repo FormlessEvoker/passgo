@@ -15,7 +15,11 @@ fmt:
 	gofmt -w .
 
 fmt-check:
-	@unformatted="$$(gofmt -l .)"; \
+	@unformatted="$$(gofmt -l .)"; status=$$?; \
+	if [ $$status -ne 0 ]; then \
+		echo "gofmt failed"; \
+		exit $$status; \
+	fi; \
 	if [ -n "$$unformatted" ]; then \
 		echo "The following files are not gofmt'd:"; \
 		echo "$$unformatted"; \

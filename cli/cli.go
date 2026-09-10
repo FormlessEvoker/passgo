@@ -21,6 +21,8 @@ Usage:
   passgo get <query> [--clip]
   passgo show <query>
   passgo ls [query]
+  passgo edit <query> [-u username] [-p | -g [length]] [-n notes]
+  passgo mv <query> <new-name>
   passgo rm <query> [-f]
   passgo --version | --help
 
@@ -75,6 +77,10 @@ func Run(args []string) int {
 		return runShow(vaultPath, passwordFile, cmdArgs)
 	case "ls":
 		return runLs(vaultPath, passwordFile, cmdArgs)
+	case "edit":
+		return runEdit(vaultPath, passwordFile, cmdArgs)
+	case "mv":
+		return runMv(vaultPath, passwordFile, cmdArgs)
 	case "rm":
 		return runRm(vaultPath, passwordFile, cmdArgs)
 	default:

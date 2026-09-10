@@ -46,12 +46,12 @@ func runShow(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	match, code, ok := resolveOne(s.Payload.Entries, query)
+	i, code, ok := resolveOne(s.Payload.Entries, query)
 	if !ok {
 		return code
 	}
 
-	printEntryDetail(os.Stdout, match)
+	printEntryDetail(os.Stdout, s.Payload.Entries[i])
 	return ExitOK
 }
 

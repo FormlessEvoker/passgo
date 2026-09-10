@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/FormlessEvoker/passgo/entry"
 	"github.com/FormlessEvoker/passgo/store"
 )
 
@@ -48,10 +47,11 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	target, code, ok := resolveOne(s.Payload.Entries, query)
+	i, code, ok := resolveOne(s.Payload.Entries, query)
 	if !ok {
 		return code
 	}
+	target := s.Payload.Entries[i]
 
 	if !force {
 		confirmed, err := confirm(fmt.Sprintf("Delete %s (%s)? [y/N] ", target.Name, target.Username))
@@ -65,34 +65,13 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 		}
 	}
 
-	s.Payload.Entries = removeEntry(s.Payload.Entries, target)
+	s.Payload.Entries = append(s.Payload.Entries[:i], s.Payload.Entries[i+1:]...)
 
 	if err := s.Save(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return ExitGeneral
 	}
 	return ExitOK
-}
-
-// removeEntry returns entries with target removed, matched on name
-// alone — the entry's identity, per SPECIFICATION.md §3.2. target
-// always comes from resolveOne() against this same slice, so it is
-// guaranteed to be present exactly once.
-//
-// Only the first match is dropped, so a single rm can never delete
-// more than one entry even if the uniqueness invariant is somehow
-// violated.
-func removeEntry(entries []entry.Entry, target entry.Entry) []entry.Entry {
-	out := make([]entry.Entry, 0, len(entries)-1)
-	removed := false
-	for _, e := range entries {
-		if !removed && strings.EqualFold(e.Name, target.Name) {
-			removed = true
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
 }
 
 // confirm writes prompt to stderr and reads one line from stdin,

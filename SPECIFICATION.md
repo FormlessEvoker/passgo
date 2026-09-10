@@ -420,7 +420,14 @@ one entry per line and stable, so it composes with `grep` and `awk`.
 ### `passgo edit <query> [flags]`
 `-u --username`, `-p --password`, `-g --gen [length]`, `-n --notes` — the same
 field flags as `add`, with the same meanings. Only the flags given are changed;
-`-p` prompts for a new password and `-g` generates one. Refreshes `updated`.
+`-p` prompts for a new password and `-g` generates one, printing it to stdout
+exactly as `add -g` does, since nothing else in the run reveals it. Refreshes
+`updated`.
+
+A flag given with an empty value clears that field: `edit x -n ""` removes the
+notes, which is distinct from omitting `-n` and leaving them alone. At least one
+field flag is required — `edit` with none is a usage error (exit code 2) rather
+than a write that touches nothing but `updated`.
 
 `edit` does not change `name`. Identity changes go through `mv`, which keeps
 the two kinds of operation visually distinct: `edit` updates what an entry
@@ -434,6 +441,11 @@ Renames the entry matched by `<query>` to `<new-name>`, leaving every other
 field untouched, and refreshes `updated`. Fails with exit code 1 if an entry
 with `<new-name>` already exists, compared case-insensitively — the same
 uniqueness rule `add` enforces.
+
+The entry being renamed is exempt from that check, so correcting a name's
+capitalisation (`github.com` to `GitHub.com`) is allowed; it would otherwise
+collide with itself. An empty `<new-name>` is a usage error, since `name` is
+required and a blank one would be unaddressable by any query.
 
 Renaming in place rather than requiring `add` + `rm` matters because the
 alternative round-trips the secret through `get` and the shell to preserve it,

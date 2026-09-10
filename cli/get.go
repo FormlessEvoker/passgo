@@ -42,12 +42,12 @@ func runGet(vaultPath, passwordFile string, args []string) int {
 	}
 	defer s.Close()
 
-	match, code, ok := resolveOne(s.Payload.Entries, query)
+	i, code, ok := resolveOne(s.Payload.Entries, query)
 	if !ok {
 		return code
 	}
 
-	secret := match.Secret
+	secret := s.Payload.Entries[i].Secret
 
 	if clip {
 		if err := copyToClipboard(secret); err != nil {

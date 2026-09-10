@@ -27,6 +27,13 @@ import (
 // coordination if that's ever needed.
 var ErrConflict = errors.New("store: vault was modified since it was opened; re-run to see the latest changes")
 
+// ErrRekeyed means Save was called on a Store whose vault has already
+// been re-encrypted under a new master password by ChangePassword.
+// The key this Store holds no longer matches the file on disk, so
+// saving would re-encrypt the vault under the superseded password and
+// lock the user out with a password they just replaced.
+var ErrRekeyed = errors.New("store: vault was re-encrypted by ChangePassword; reopen it before saving")
+
 // Store is an open vault: its decrypted entries, plus enough state to
 // write changes back to the same file without re-deriving the key.
 type Store struct {
@@ -35,6 +42,7 @@ type Store struct {
 	path     string
 	opened   *vault.Opened
 	rawBytes []byte // the file's on-disk contents as of Open/last Save
+	rekeyed  bool   // ChangePassword has superseded opened's key
 }
 
 // Init creates a new, empty vault at path. It fails if a file already
@@ -101,6 +109,10 @@ func (s *Store) Close() {
 // read at Open (or the last successful Save), and refuses with
 // ErrConflict if not — see ErrConflict's doc comment.
 func (s *Store) Save() error {
+	if s.rekeyed {
+		return ErrRekeyed
+	}
+
 	current, err := os.ReadFile(s.path)
 	if err != nil {
 		return err
@@ -121,5 +133,45 @@ func (s *Store) Save() error {
 		return err
 	}
 	s.rawBytes = fileBytes
+	return nil
+}
+
+// ChangePassword re-encrypts the vault under newPassword and writes
+// it back, per SPECIFICATION.md §6. The payload is re-serialized from
+// s.Payload unchanged; only the key material differs.
+//
+// Unlike Save, which reuses the key and parameters the vault was
+// opened with, this derives a fresh key under a freshly generated
+// salt and nonce (§2.1), so nothing about the old password survives
+// in the new file.
+//
+// It performs the same pre-write conflict check as Save, and leaves
+// the Store spent: see ErrRekeyed.
+func (s *Store) ChangePassword(newPassword string) error {
+	if s.rekeyed {
+		return ErrRekeyed
+	}
+
+	current, err := os.ReadFile(s.path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, s.rawBytes) {
+		return ErrConflict
+	}
+
+	data, err := entry.Marshal(s.Payload)
+	if err != nil {
+		return err
+	}
+	fileBytes, err := vault.Create(newPassword, data)
+	if err != nil {
+		return err
+	}
+	if err := vault.WriteAtomic(s.path, fileBytes); err != nil {
+		return err
+	}
+	s.rawBytes = fileBytes
+	s.rekeyed = true
 	return nil
 }

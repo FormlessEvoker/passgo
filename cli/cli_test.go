@@ -887,6 +887,143 @@ func TestSecretsOmitTrailingNewlineWhenPiped(t *testing.T) {
 	}
 }
 
+// TestPasswdRotatesTheMasterPassword is the core of the command: the
+// old password must stop working and the new one must start.
+func TestPasswdRotatesTheMasterPassword(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "s3cr3t\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-n", "notes here", "-p"})
+
+	newFile := writePasswordFile(t, "a brand new master")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+
+	// The old password no longer opens the vault.
+	if code := Run([]string{"get", "github.com"}); code != ExitAuthFailed {
+		t.Errorf("old password still opens the vault: exit code = %d, want %d", code, ExitAuthFailed)
+	}
+
+	// The new one does, and the entry survived intact.
+	t.Setenv("PASSGO_MASTER", "a brand new master")
+	out, code := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if code != ExitOK {
+		t.Fatalf("new password does not open the vault: exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.TrimSpace(out) != "s3cr3t" {
+		t.Errorf("secret = %q, want %q", strings.TrimSpace(out), "s3cr3t")
+	}
+
+	shown, code := captureStdout(t, func() int { return Run([]string{"show", "github.com"}) })
+	if code != ExitOK {
+		t.Fatalf("show exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(shown, "alice") || !strings.Contains(shown, "notes here") {
+		t.Errorf("passwd did not leave entries unchanged: %q", shown)
+	}
+}
+
+// TestPasswdGeneratesFreshSaltAndNonce checks §2.1's requirement
+// directly against the file header, which is where it is observable.
+func TestPasswdGeneratesFreshSaltAndNonce(t *testing.T) {
+	path := withTempVault(t)
+	Run([]string{"init"})
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newFile := writePasswordFile(t, "replacement")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Header layout per §3.1: salt at [18,34), nonce at [34,46).
+	if bytes.Equal(before[18:34], after[18:34]) {
+		t.Error("salt was not regenerated")
+	}
+	if bytes.Equal(before[34:46], after[34:46]) {
+		t.Error("nonce was not regenerated")
+	}
+}
+
+func TestPasswdWrongCurrentPasswordFails(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	t.Setenv("PASSGO_MASTER", "not the right one")
+	newFile := writePasswordFile(t, "replacement")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitAuthFailed {
+		t.Errorf("passwd with wrong current password: exit code = %d, want %d", code, ExitAuthFailed)
+	}
+}
+
+// TestPasswdDoesNotReuseCurrentPasswordAsNew guards the §4 rule that
+// the new password never falls back to $PASSGO_MASTER. Without a new
+// password source and with no TTY, passwd must fail rather than
+// "rotate" the vault to the password it already has.
+func TestPasswdDoesNotReuseCurrentPasswordAsNew(t *testing.T) {
+	// With no new-password source this falls through to promptTTY,
+	// which blocks for input when /dev/tty is openable. Skip there
+	// rather than hanging someone's local `go test`; the assertion
+	// still runs anywhere without a controlling terminal, CI included.
+	if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
+		f.Close()
+		t.Skip("/dev/tty is available; passwd would prompt interactively and block")
+	}
+
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// PASSGO_MASTER is set by withTempVault and supplies the current
+	// password; nothing supplies a new one.
+	if code := Run([]string{"passwd"}); code == ExitOK {
+		t.Fatal("passwd succeeded with no new-password source; it must not reuse $PASSGO_MASTER")
+	}
+
+	// The vault must still open under the original password.
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("vault no longer opens under the original password: exit code = %d", code)
+	}
+}
+
+func TestPasswdNewPasswordFileEnvFallback(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	t.Setenv("PASSGO_NEW_MASTER_FILE", writePasswordFile(t, "from the environment"))
+	if code := Run([]string{"passwd"}); code != ExitOK {
+		t.Fatalf("passwd via $PASSGO_NEW_MASTER_FILE: exit code = %d, want %d", code, ExitOK)
+	}
+
+	t.Setenv("PASSGO_MASTER", "from the environment")
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("new password from env file does not open the vault: exit code = %d", code)
+	}
+}
+
+func TestPasswdRejectsUnknownFlagAndMissingValue(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	for _, args := range [][]string{
+		{"passwd", "--nope"},
+		{"passwd", "--new-master-password-file"},
+		{"passwd", "extra-positional"},
+	} {
+		if code := Run(args); code != ExitUsage {
+			t.Errorf("Run(%q): exit code = %d, want %d", args, code, ExitUsage)
+		}
+	}
+}
+
 func TestVaultFlagOverridesEnv(t *testing.T) {
 	t.Setenv("PASSGO_VAULT", "/should/not/be/used")
 	t.Setenv("PASSGO_MASTER", "correct horse battery staple")

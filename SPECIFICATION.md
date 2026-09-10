@@ -335,8 +335,17 @@ If no TTY is available and neither the password file nor `$PASSGO_MASTER` is
 set, the command fails with exit code 2 rather than silently reading from
 stdin.
 
-Each command performs exactly one derive-and-unlock. There is no session,
-agent, or cached key in v1 — the master password is entered every time. At the
+`passwd` needs two passwords, and they cannot come from the same source. The
+current one is read exactly as above. The new one comes from
+`--new-master-password-file <path>` (or `$PASSGO_NEW_MASTER_FILE`) when given,
+and otherwise from a TTY prompt asked twice that must match. It deliberately
+does **not** fall back to `$PASSGO_MASTER`: that variable holds the current
+password, so honouring it would rotate the vault to the password it already has
+and report success — the one outcome someone running `passwd` never wants.
+
+Each command performs exactly one derive-and-unlock, `passwd` excepted — it
+verifies the old password and derives the new one, so it pays for two. There is
+no session, agent, or cached key in v1 — the master password is entered every time. At the
 parameters in §2.1 an unlock costs roughly half a second, which is acceptable
 for a personal tool and removes an entire class of cached-credential
 vulnerabilities.
@@ -475,9 +484,19 @@ resolved at all, so an absent, unreadable, or unresolvable vault cannot stop it
 running — a generator that needs a vault to work would not be standalone.
 
 ### `passgo passwd`
-Prompts for the current master password, then the new one twice. Generates a
-**fresh salt and nonce**, re-derives the key, and rewrites the vault. Entries
-are unchanged.
+Prompts for the current master password, then the new one twice (§4 covers where
+each may come from non-interactively). Generates a **fresh salt and nonce**,
+re-derives the key, and rewrites the vault. Entries are unchanged.
+
+The vault is opened, and the current password thereby verified, before the new
+one is asked for: a mistyped current password should cost one prompt, not three.
+
+This is the one command that performs two key derivations rather than the single
+one §4 describes — the old password must be verified and the new one derived —
+so it costs roughly twice what other commands do. The write is atomic and takes
+the same pre-write conflict check as every other mutation (§3.4), so a failure
+partway through leaves the vault readable under the old password rather than
+under neither.
 
 ### Exit codes
 

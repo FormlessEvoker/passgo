@@ -78,18 +78,6 @@ func (o *Opened) Save(newPlaintext []byte) ([]byte, error) {
 	return seal(o.header, o.key, newPlaintext)
 }
 
-// Rekey decrypts fileBytes with oldPassword and re-encrypts plaintext
-// under a freshly generated salt and nonce derived from newPassword,
-// using the default Argon2id parameters. Used by `passwd`.
-func Rekey(fileBytes []byte, oldPassword, newPassword string) ([]byte, error) {
-	o, err := Open(fileBytes, oldPassword)
-	if err != nil {
-		return nil, err
-	}
-	defer o.Close()
-	return Create(newPassword, o.Plaintext)
-}
-
 // seal encodes h as AAD and encrypts plaintext under key and h.Nonce,
 // returning header || ciphertext || tag.
 func seal(h Header, key, plaintext []byte) ([]byte, error) {

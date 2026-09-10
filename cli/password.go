@@ -55,6 +55,34 @@ func readNewPassword(passwordFile string) (string, error) {
 	return p1, nil
 }
 
+// readReplacementPassword returns the new master password for
+// `passwd`: from newPasswordFile if non-empty (from
+// --new-master-password-file or $PASSGO_NEW_MASTER_FILE), otherwise
+// from a TTY double prompt that must match.
+//
+// It deliberately does not fall back to $PASSGO_MASTER the way
+// readNewPassword does. That variable holds the *current* password,
+// so honouring it here would quietly rotate the vault to the password
+// it already has and report success — the one outcome a user running
+// `passwd` never wants.
+func readReplacementPassword(newPasswordFile string) (string, error) {
+	if newPasswordFile != "" {
+		return readPasswordFile(newPasswordFile, os.Stderr)
+	}
+	p1, err := promptTTY("New master password: ")
+	if err != nil {
+		return "", err
+	}
+	p2, err := promptTTY("Confirm new master password: ")
+	if err != nil {
+		return "", err
+	}
+	if p1 != p2 {
+		return "", errors.New("passwords did not match")
+	}
+	return p1, nil
+}
+
 // readPasswordFile reads the master password from path: the file's
 // contents with a single trailing newline stripped, same convention
 // as ssh-keygen passphrase files and similar tools. If it is readable

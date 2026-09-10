@@ -153,35 +153,6 @@ func TestSaveReusesKeyAndParamsWithFreshNonce(t *testing.T) {
 	}
 }
 
-func TestRekeyChangesSaltAndPassword(t *testing.T) {
-	fileBytes, err := Create("old password", []byte("payload"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	origHeader, _ := ParseHeader(fileBytes[:HeaderSize])
-
-	rekeyed, err := Rekey(fileBytes, "old password", "new password")
-	if err != nil {
-		t.Fatal(err)
-	}
-	newHeader, _ := ParseHeader(rekeyed[:HeaderSize])
-
-	if newHeader.Salt == origHeader.Salt {
-		t.Error("Rekey did not generate a fresh salt")
-	}
-	if _, err := Open(rekeyed, "old password"); err == nil {
-		t.Error("old password still opens the vault after Rekey")
-	}
-	o, err := Open(rekeyed, "new password")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer o.Close()
-	if string(o.Plaintext) != "payload" {
-		t.Errorf("got %q after Rekey, want %q", o.Plaintext, "payload")
-	}
-}
-
 func TestWriteAtomicRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "vault.pgv")

@@ -355,6 +355,21 @@ vault is solid.
 
 **Session agent.** A short-lived cached key so the master password is not
 retyped every command. Only if retyping actually proves annoying in daily use.
+Would introduce the first setting that plausibly wants persisting (session
+TTL) — see **Config file** below.
+
+**Config file.** A global config (e.g. `/etc/passgo.conf`) with a local
+override, to set things like the default vault path or master password file
+without env vars or per-invocation flags. Deferred: every setting proposed so
+far — vault path, master password file — already has an env var and a flag
+(`$PASSGO_VAULT`/`--vault`, `$PASSGO_MASTER_FILE`/`--master-password-file`),
+so a config file today would just be a second, redundant way to set two keys.
+Not worth the format decision, the global/local precedence rules, and the
+parsing dependency for that. Revisit if the session agent above ships — a
+session TTL (and similar knobs, like which entries a session should cover) is
+the kind of setting that wants to persist across invocations rather than be
+retyped as a flag or exported as an env var each time, which would tip the
+balance.
 
 **Also deferred:** import and export, TOTP, clipboard auto-clear, vault padding
 to hide size, and entry history.

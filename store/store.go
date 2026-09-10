@@ -107,24 +107,51 @@ func (s *Store) Close() {
 	s.opened.Close()
 }
 
-// Save re-encrypts s.Payload and atomically writes it back to the
-// vault file, under the same key and KDF parameters it was opened
-// with — no re-derivation of the key from the master password.
+// commit writes fileBytes over the vault: the pre-write conflict
+// check, the atomic write, and recording what is now on disk.
 //
-// It first checks that the file on disk still matches what this Store
-// read at Open (or the last successful Save), and refuses with
-// ErrConflict if not — see ErrConflict's doc comment.
-func (s *Store) Save() error {
-	if s.rekeyed {
-		return ErrRekeyed
-	}
-
+// Save and ChangePassword end in exactly this sequence and differ
+// only in how they produce fileBytes, so the bookkeeping that keeps a
+// Store honest about the file lives here once. Splitting it between
+// the two is what previously let them disagree about ErrNotDurable:
+// past the rename that write *is* the file on disk, so rawBytes must
+// advance even though an error is returned. A Store that skipped it
+// would go on believing in a file it had already replaced, and report
+// a conflict against its own committed write.
+//
+// The conflict check sits here rather than in the callers so that it
+// runs immediately before the write. ChangePassword derives a new key
+// first, which costs roughly half a second (§4) — time that would
+// otherwise sit between checking for a concurrent write and
+// performing one.
+func (s *Store) commit(fileBytes []byte) error {
 	current, err := os.ReadFile(s.path)
 	if err != nil {
 		return err
 	}
 	if !bytes.Equal(current, s.rawBytes) {
 		return ErrConflict
+	}
+
+	if err := writeAtomic(s.path, fileBytes); err != nil {
+		if errors.Is(err, vault.ErrNotDurable) {
+			s.rawBytes = fileBytes
+		}
+		return err
+	}
+	s.rawBytes = fileBytes
+	return nil
+}
+
+// Save re-encrypts s.Payload and atomically writes it back to the
+// vault file, under the same key and KDF parameters it was opened
+// with — no re-derivation of the key from the master password.
+//
+// It refuses with ErrConflict if the file on disk no longer matches
+// what this Store read at Open (or last wrote) — see ErrConflict.
+func (s *Store) Save() error {
+	if s.rekeyed {
+		return ErrRekeyed
 	}
 
 	data, err := entry.Marshal(s.Payload)
@@ -135,11 +162,7 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(s.path, fileBytes); err != nil {
-		return err
-	}
-	s.rawBytes = fileBytes
-	return nil
+	return s.commit(fileBytes)
 }
 
 // ChangePassword re-encrypts the vault under newPassword and writes
@@ -151,19 +174,11 @@ func (s *Store) Save() error {
 // salt and nonce (§2.1), so nothing about the old password survives
 // in the new file.
 //
-// It performs the same pre-write conflict check as Save, and leaves
-// the Store spent: see ErrRekeyed.
+// It takes the same conflict check as Save and leaves the Store
+// spent: see ErrRekeyed.
 func (s *Store) ChangePassword(newPassword string) error {
 	if s.rekeyed {
 		return ErrRekeyed
-	}
-
-	current, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(current, s.rawBytes) {
-		return ErrConflict
 	}
 
 	data, err := entry.Marshal(s.Payload)
@@ -174,18 +189,13 @@ func (s *Store) ChangePassword(newPassword string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeAtomic(s.path, fileBytes); err != nil {
-		if errors.Is(err, vault.ErrNotDurable) {
-			// The rename committed: the vault on disk already requires
-			// newPassword. Record the rotation before returning the
-			// error, so nothing downstream can treat this Store — or
-			// the file — as though the old password still applied.
-			s.rawBytes = fileBytes
-			s.rekeyed = true
-		}
-		return err
+
+	err = s.commit(fileBytes)
+	if err == nil || errors.Is(err, vault.ErrNotDurable) {
+		// Both outcomes are past the rename, so the vault already
+		// requires newPassword and this Store's key is superseded.
+		// A conflict, by contrast, wrote nothing.
+		s.rekeyed = true
 	}
-	s.rawBytes = fileBytes
-	s.rekeyed = true
-	return nil
+	return err
 }

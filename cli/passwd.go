@@ -88,8 +88,9 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 			// here would send the user back to a password that no
 			// longer opens their vault.
 			fmt.Fprintln(os.Stderr, "IMPORTANT: the master password WAS changed — use the new one from now on.")
-			fmt.Fprintln(os.Stderr, "Only the directory sync failed, so the change may not survive a power loss.")
-			fmt.Fprintln(os.Stderr, "Verify with `passgo ls`, and re-run passwd if the vault still wants the old password.")
+			fmt.Fprintln(os.Stderr, "Only the directory sync failed, so the rename may not survive an immediate power loss.")
+			fmt.Fprintln(os.Stderr, "No command can show you this: the new vault is already what every read sees.")
+			fmt.Fprintln(os.Stderr, "To force it to disk, run `sync`, or make any other change to the vault.")
 		}
 		return ExitGeneral
 	}

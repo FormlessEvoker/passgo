@@ -230,7 +230,13 @@ original vault is left untouched.
 
 The rename is the commit point, and step 6 comes after it. A failure to fsync
 the directory therefore leaves the new vault already in place and visible to
-every reader, with only its survival across a power loss in doubt. This is
+every reader, with only its survival across a power loss in doubt.
+
+This state cannot be detected by reading. The rename is applied in the operating
+system's page cache, so every subsequent read on the running machine resolves
+through it and sees the new vault; only a crash before the cache is written back
+can reveal the difference. A command reporting this condition MUST therefore not
+send the user to verify it with a read — there is nothing for a read to find. This is
 reported as a distinct error from every other write failure, because the two
 demand opposite responses: before the rename nothing changed, after it
 everything did. Treating them alike would tell a user that a write failed when

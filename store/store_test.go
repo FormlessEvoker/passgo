@@ -315,3 +315,53 @@ func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 		t.Errorf("Save() after a non-durable rotation: err = %v, want ErrRekeyed", saveErr)
 	}
 }
+
+// TestSaveAfterANonDurableWriteDoesNotConflictWithItself covers the
+// asymmetry that commit() exists to prevent. A Save whose rename
+// committed but whose directory sync failed has changed the file, so
+// the Store must record it. Otherwise the next Save compares the file
+// against a superseded snapshot and reports ErrConflict — a conflict
+// with nobody, against its own write.
+func TestSaveAfterANonDurableWriteDoesNotConflictWithItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := Init(path, "pw"); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// First write commits, then reports a failed directory sync.
+	orig := writeAtomic
+	writeAtomic = func(p string, data []byte) error {
+		if writeErr := orig(p, data); writeErr != nil {
+			return writeErr
+		}
+		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
+	}
+	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
+	if err := s.Save(); !errors.Is(err, vault.ErrNotDurable) {
+		writeAtomic = orig
+		t.Fatalf("first Save: err = %v, want ErrNotDurable", err)
+	}
+	writeAtomic = orig
+
+	// The same Store saving again must succeed. Before commit() was
+	// shared, this returned ErrConflict.
+	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "b.com", Secret: "2", Updated: entry.Now()})
+	if err := s.Save(); err != nil {
+		t.Fatalf("second Save after a non-durable first: err = %v, want nil", err)
+	}
+
+	reopened, err := Open(path, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if len(reopened.Payload.Entries) != 2 {
+		t.Errorf("entries after both saves: %+v, want a.com and b.com", reopened.Payload.Entries)
+	}
+}

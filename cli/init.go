@@ -8,13 +8,13 @@ import (
 	"github.com/FormlessEvoker/passgo/store"
 )
 
-func runInit(vaultPath string, args []string) int {
+func runInit(vaultPath, passwordFile string, args []string) int {
 	if len(args) != 0 {
 		fmt.Fprintln(os.Stderr, "error: init takes no arguments")
 		return ExitUsage
 	}
 
-	password, err := readNewPassword()
+	password, err := readNewPassword(passwordFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if errors.Is(err, ErrNoTTY) {

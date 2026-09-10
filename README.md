@@ -79,6 +79,12 @@ tampered with to weaken the next unlock.
 The master password is read from your terminal with echo disabled. It is never
 accepted as a command-line flag.
 
+For scripting and testing, `--master-password-file <path>` (or
+`$PASSGO_MASTER_FILE`) reads it from a file instead of prompting. Prefer this
+over `$PASSGO_MASTER` — a file under normal permissions beats a secret sitting
+in the environment, where it's visible via `/proc` on Linux and inherited by
+every child process.
+
 **What this protects against:** someone who obtains the vault file — a stolen
 laptop, a backup drive, a cloud-synced directory, a misplaced USB stick.
 

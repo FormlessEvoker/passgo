@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,5 +226,111 @@ func TestVaultFlagOverridesEnv(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("vault not created at --vault path: %v", err)
+	}
+}
+
+// writePasswordFile writes text as the contents of a fresh temp file
+// and returns its path, for exercising --master-password-file /
+// $PASSGO_MASTER_FILE without $PASSGO_MASTER set at all.
+func writePasswordFile(t *testing.T, text string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte(text+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestMasterPasswordFileFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+
+	if code := Run([]string{"--master-password-file", pwFile, "init"}); code != ExitOK {
+		t.Fatalf("init with --master-password-file failed: %d", code)
+	}
+
+	if code := Run([]string{"--master-password-file", pwFile, "get", "anything"}); code != ExitNotFound {
+		t.Errorf("get with --master-password-file: exit code = %d, want %d (auth should have succeeded)", code, ExitNotFound)
+	}
+}
+
+func TestMasterPasswordFileEnvFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+	t.Setenv("PASSGO_MASTER_FILE", pwFile)
+
+	if code := Run([]string{"init"}); code != ExitOK {
+		t.Fatalf("init with $PASSGO_MASTER_FILE failed: %d", code)
+	}
+}
+
+func TestMasterPasswordFileOverridesEnvVar(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	pwFile := writePasswordFile(t, "correct horse battery staple")
+
+	// Vault is created with the file's password, with no conflicting
+	// $PASSGO_MASTER yet — so an implementation that always preferred
+	// $PASSGO_MASTER can't get lucky here by using the same value for
+	// both init and get.
+	if code := Run([]string{"--master-password-file", pwFile, "init"}); code != ExitOK {
+		t.Fatalf("init failed: %d", code)
+	}
+
+	// Now introduce a conflicting $PASSGO_MASTER before get. If
+	// --master-password-file had lost precedence to it, get would fail
+	// authentication instead of simply not finding the (nonexistent)
+	// entry.
+	t.Setenv("PASSGO_MASTER", "wrong password")
+	if code := Run([]string{"--master-password-file", pwFile, "get", "anything"}); code != ExitNotFound {
+		t.Errorf("get: exit code = %d, want %d (--master-password-file should win over $PASSGO_MASTER)", code, ExitNotFound)
+	}
+}
+
+func TestReadPasswordFileWarnsOnLoosePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings bytes.Buffer
+	if _, err := readPasswordFile(path, &warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings.Len() == 0 {
+		t.Error("expected a warning for a group/world-readable password file")
+	}
+}
+
+func TestReadPasswordFileNoWarningOn0600(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.txt")
+	if err := os.WriteFile(path, []byte("secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings bytes.Buffer
+	if _, err := readPasswordFile(path, &warnings); err != nil {
+		t.Fatal(err)
+	}
+	if warnings.Len() != 0 {
+		t.Errorf("unexpected warning for a 0600 password file: %s", warnings.String())
+	}
+}
+
+func TestStripOneTrailingNewline(t *testing.T) {
+	cases := map[string]string{
+		"secret\n":     "secret",
+		"secret\r\n":   "secret",
+		"secret":       "secret",
+		"secret\n\n":   "secret\n",
+		"secret\r\n\n": "secret\r\n",
+		"secret\r":     "secret\r", // no LF was removed, so the lone CR stays
+	}
+	for in, want := range cases {
+		if got := stripOneTrailingNewline(in); got != want {
+			t.Errorf("stripOneTrailingNewline(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

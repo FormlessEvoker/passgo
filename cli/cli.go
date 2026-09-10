@@ -19,6 +19,7 @@ Usage:
   passgo init
   passgo add <name> [-u username] (-p | -g [length]) [-n notes]
   passgo get <query> [-u username] [--clip]
+  passgo show <query> [-u username]
   passgo ls [query]
   passgo --version | --help
 
@@ -69,6 +70,8 @@ func Run(args []string) int {
 		return runAdd(vaultPath, passwordFile, cmdArgs)
 	case "get":
 		return runGet(vaultPath, passwordFile, cmdArgs)
+	case "show":
+		return runShow(vaultPath, passwordFile, cmdArgs)
 	case "ls":
 		return runLs(vaultPath, passwordFile, cmdArgs)
 	default:

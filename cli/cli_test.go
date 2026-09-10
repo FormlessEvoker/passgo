@@ -216,6 +216,82 @@ func TestGetWrongMasterPasswordFails(t *testing.T) {
 	}
 }
 
+func TestShowPrintsFieldsWithSecretMasked(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "s3cr3t\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-n", "personal account", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"show", "github.com"})
+	})
+	if code != ExitOK {
+		t.Fatalf("show exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "github.com") || !strings.Contains(out, "alice") || !strings.Contains(out, "personal account") {
+		t.Errorf("show output missing a field: %q", out)
+	}
+	if strings.Contains(out, "s3cr3t") {
+		t.Errorf("show output leaked the secret: %q", out)
+	}
+	if !strings.Contains(out, secretMask) {
+		t.Errorf("show output missing the secret mask: %q", out)
+	}
+}
+
+func TestShowNoMatch(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	if code := Run([]string{"show", "nope"}); code != ExitNotFound {
+		t.Errorf("show with no match: exit code = %d, want %d", code, ExitNotFound)
+	}
+}
+
+func TestShowAmbiguousMatch(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "github.com", "-u", "one", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "gitlab.com", "-u", "two", "-p"})
+
+	if code := Run([]string{"show", "git"}); code != ExitAmbiguous {
+		t.Errorf("ambiguous show: exit code = %d, want %d", code, ExitAmbiguous)
+	}
+}
+
+func TestShowDisambiguatedByUsername(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	withStdin(t, "a\n")
+	Run([]string{"add", "example.com", "-u", "alice", "-p"})
+	withStdin(t, "b\n")
+	Run([]string{"add", "example.com", "-u", "bob", "-p"})
+
+	out, code := captureStdout(t, func() int {
+		return Run([]string{"show", "example.com", "-u", "bob"})
+	})
+	if code != ExitOK {
+		t.Fatalf("show -u bob exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, "bob") {
+		t.Errorf("show -u bob output = %q, want it to contain %q", out, "bob")
+	}
+}
+
+func TestShowWrongMasterPasswordFails(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	t.Setenv("PASSGO_MASTER", "wrong password")
+	if code := Run([]string{"show", "anything"}); code != ExitAuthFailed {
+		t.Errorf("show with wrong master password: exit code = %d, want %d", code, ExitAuthFailed)
+	}
+}
+
 func TestVaultFlagOverridesEnv(t *testing.T) {
 	t.Setenv("PASSGO_VAULT", "/should/not/be/used")
 	t.Setenv("PASSGO_MASTER", "correct horse battery staple")

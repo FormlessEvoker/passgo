@@ -535,28 +535,76 @@ func TestEditEmptyValueClearsField(t *testing.T) {
 	}
 }
 
+// updatedAt returns the `updated` timestamp ls prints for the named
+// entry, parsed. ls writes name, username and an RFC 3339 stamp
+// separated by tabwriter padding, and none of those can themselves
+// contain whitespace, so the timestamp is always the final field —
+// including when the username is empty and the line has only two.
+//
+// Reading the column directly, rather than diffing whole ls output,
+// keeps a refresh assertion from being satisfied by some other field
+// the edit happened to change.
+func updatedAt(t *testing.T, name string) time.Time {
+	t.Helper()
+
+	out, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
+	if code != ExitOK {
+		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == name {
+			ts, err := time.Parse(time.RFC3339, fields[len(fields)-1])
+			if err != nil {
+				t.Fatalf("unparseable updated stamp in ls line %q: %v", line, err)
+			}
+			return ts
+		}
+	}
+	t.Fatalf("no ls line for %q in output:\n%s", name, out)
+	return time.Time{}
+}
+
+// waitForNextSecond sleeps past the next whole second. entry.Now()
+// truncates to seconds, so an edit landing in the same second as the
+// one before it produces an identical stamp and would prove nothing.
+func waitForNextSecond() {
+	time.Sleep(1100 * time.Millisecond)
+}
+
 func TestEditRefreshesUpdated(t *testing.T) {
 	withTempVault(t)
 	seedEditFixture(t)
 
-	before, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
-	if code != ExitOK {
-		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
-	}
+	before := updatedAt(t, "github.com")
 
-	// entry.Now() truncates to whole seconds, so a same-second edit
-	// would produce an identical stamp and prove nothing.
-	time.Sleep(1100 * time.Millisecond)
-	if code := Run([]string{"edit", "github.com", "-u", "bob"}); code != ExitOK {
+	// Notes deliberately: ls does not print them, so the only way this
+	// entry's ls line can change is the timestamp itself.
+	waitForNextSecond()
+	if code := Run([]string{"edit", "github.com", "-n", "revised"}); code != ExitOK {
 		t.Fatalf("edit exit code = %d, want %d", code, ExitOK)
 	}
 
-	after, code := captureStdout(t, func() int { return Run([]string{"ls"}) })
-	if code != ExitOK {
-		t.Fatalf("ls exit code = %d, want %d", code, ExitOK)
+	after := updatedAt(t, "github.com")
+	if !after.After(before) {
+		t.Errorf("updated = %s, want later than %s", after.Format(time.RFC3339), before.Format(time.RFC3339))
 	}
-	if before == after {
-		t.Errorf("updated timestamp was not refreshed: %q", after)
+}
+
+func TestMvRefreshesUpdated(t *testing.T) {
+	withTempVault(t)
+	seedEditFixture(t)
+
+	before := updatedAt(t, "github.com")
+
+	waitForNextSecond()
+	if code := Run([]string{"mv", "github.com", "forge.example"}); code != ExitOK {
+		t.Fatalf("mv exit code = %d, want %d", code, ExitOK)
+	}
+
+	after := updatedAt(t, "forge.example")
+	if !after.After(before) {
+		t.Errorf("updated = %s, want later than %s", after.Format(time.RFC3339), before.Format(time.RFC3339))
 	}
 }
 

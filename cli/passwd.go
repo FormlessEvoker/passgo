@@ -9,15 +9,6 @@ import (
 	"github.com/FormlessEvoker/passgo/vault"
 )
 
-// rotate indirects Store.ChangePassword so tests can reach the
-// committed-but-not-durable branch below. §6 makes reporting that
-// case a MUST — it is what stops a user being sent back to a password
-// their vault no longer accepts — so the branch has to be assertable
-// from the command, not just from the store.
-var rotate = func(s *store.Store, newPassword string) error {
-	return s.ChangePassword(newPassword)
-}
-
 // runPasswd implements `passgo passwd` per SPECIFICATION.md §6:
 // prompts for the current master password, then the new one twice,
 // and rewrites the vault under a fresh salt and nonce. Entries are
@@ -80,7 +71,7 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 		return ExitUsage
 	}
 
-	if err := rotate(s, newPassword); err != nil {
+	if err := s.ChangePassword(newPassword); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		if errors.Is(err, vault.ErrNotDurable) {
 			// The rename committed before the failure, so the vault

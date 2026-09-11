@@ -2,7 +2,6 @@ package store
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -283,16 +282,8 @@ func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Install the new file, then fail — exactly what a directory sync
-	// failure does.
-	orig := writeAtomic
-	writeAtomic = func(p string, data []byte) error {
-		if writeErr := orig(p, data); writeErr != nil {
-			return writeErr
-		}
-		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
-	}
-	defer func() { writeAtomic = orig }()
+	// The real write runs and commits; only the directory sync fails.
+	defer vault.FailSyncDir(errors.New("simulated"))()
 
 	err = s.ChangePassword("new pw")
 	if !errors.Is(err, vault.ErrNotDurable) {
@@ -334,20 +325,14 @@ func TestSaveAfterANonDurableWriteDoesNotConflictWithItself(t *testing.T) {
 	}
 	defer s.Close()
 
-	// First write commits, then reports a failed directory sync.
-	orig := writeAtomic
-	writeAtomic = func(p string, data []byte) error {
-		if writeErr := orig(p, data); writeErr != nil {
-			return writeErr
-		}
-		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
-	}
+	// The first write commits, then reports a failed directory sync.
+	restore := vault.FailSyncDir(errors.New("simulated"))
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
 	if err := s.Save(); !errors.Is(err, vault.ErrNotDurable) {
-		writeAtomic = orig
+		restore()
 		t.Fatalf("first Save: err = %v, want ErrNotDurable", err)
 	}
-	writeAtomic = orig
+	restore()
 
 	// The same Store saving again must succeed. Before commit() was
 	// shared, this returned ErrConflict.

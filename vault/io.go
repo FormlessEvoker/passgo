@@ -40,10 +40,9 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 // the one mistake that can strand someone outside their own vault.
 var ErrNotDurable = errors.New("vault: write installed but directory fsync failed")
 
-// syncDir indirects fsyncDir so tests can exercise the one failure
-// mode that cannot be provoked naturally: a directory sync failing
-// after the rename has already committed. That window is why
-// ErrNotDurable exists, so it needs to be reachable in a test.
+// syncDir performs the directory fsync that makes a rename or link
+// durable. It is a variable so that FailSyncDir (testhooks.go) can
+// replace it — the single injection point for the whole module.
 var syncDir = fsyncDir
 
 // WriteAtomic writes data to path, overwriting an existing vault only

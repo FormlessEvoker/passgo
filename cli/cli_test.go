@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/FormlessEvoker/passgo/crypto"
-	"github.com/FormlessEvoker/passgo/store"
 	"github.com/FormlessEvoker/passgo/vault"
 )
 
@@ -1099,14 +1097,9 @@ func TestPasswdReportsANonDurableRotation(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
-	orig := rotate
-	rotate = func(s *store.Store, newPassword string) error {
-		if err := orig(s, newPassword); err != nil {
-			return err
-		}
-		return fmt.Errorf("%w: simulated", vault.ErrNotDurable)
-	}
-	defer func() { rotate = orig }()
+	// The real rotation runs and commits; only the directory sync
+	// fails, which is the condition §6 requires be reported.
+	defer vault.FailSyncDir(errors.New("simulated"))()
 
 	newFile := writePasswordFile(t, "the replacement")
 	out, code := captureStderr(t, func() int {
@@ -1132,9 +1125,17 @@ func TestPasswdOrdinaryFailureOmitsTheChangedNotice(t *testing.T) {
 	withTempVault(t)
 	Run([]string{"init"})
 
-	orig := rotate
-	rotate = func(*store.Store, string) error { return errors.New("disk on fire") }
-	defer func() { rotate = orig }()
+	// A real failure that never reaches the commit point: with the
+	// vault's directory unwritable, the temp file cannot be created.
+	// No hook needed, so this exercises the genuine error path.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permissions would not be enforced")
+	}
+	dir := filepath.Dir(os.Getenv("PASSGO_VAULT"))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
 
 	newFile := writePasswordFile(t, "the replacement")
 	out, code := captureStderr(t, func() int {
@@ -1171,6 +1172,29 @@ func TestReportNotDurableStatesTheChangeTookEffect(t *testing.T) {
 		if strings.Contains(out, forbidden) {
 			t.Errorf("output tells the reader to verify by reading (%q): %q", forbidden, out)
 		}
+	}
+}
+
+// TestInitReportsANonDurableCreation covers runInit's half of the
+// §3.4 MUST. os.Link commits before the directory sync, so a sync
+// failure leaves a created vault behind; reporting a plain failure
+// would tell the user no vault exists while one sits on disk.
+func TestInitReportsANonDurableCreation(t *testing.T) {
+	path := withTempVault(t)
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, code := captureStderr(t, func() int { return Run([]string{"init"}) })
+	if code != ExitGeneral {
+		t.Fatalf("init exit code = %d, want %d", code, ExitGeneral)
+	}
+	if !strings.Contains(out, "WAS created") {
+		t.Errorf("stderr does not say the vault was created: %q", out)
+	}
+
+	// And the claim must be true.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("vault is missing despite a committed link: %v", err)
 	}
 }
 

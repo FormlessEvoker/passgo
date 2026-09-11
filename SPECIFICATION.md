@@ -263,6 +263,25 @@ Every command that mutates the vault also re-reads the file immediately
 before this sequence and compares it against what it read at open, refusing
 to proceed if they differ — see "Concurrent writers" in §1.
 
+#### The backup copy
+
+Step 4 leaves `vault.pgv.bak` holding the vault as it stood before the write,
+encrypted under whatever master password was in force at that moment. For
+`add`, `edit`, `mv`, and `rm` that is simply a previous version under the
+current password.
+
+After `passwd` it is not. The backup still opens with the password that was
+just replaced, so a rotation prompted by a suspected exposure has not ended
+that exposure: §1 puts a vault file in someone else's hands squarely in scope,
+and this is one such file, sitting beside the live vault in the same directory
+that gets synced or backed up. `passwd` MUST therefore tell the user the backup
+exists and which password opens it.
+
+It MUST NOT delete the backup itself. That copy is the user's only way back if
+the new password turns out to be lost or mistyped, and removing it as a side
+effect of a password change would be its own kind of surprise. Stating the
+consequence and leaving the decision is the correct division.
+
 ### 3.5 Versioning and compatibility
 
 A vault carries two independent version numbers, and they answer different
@@ -533,6 +552,12 @@ the rename (§3.4), the rotation has already taken effect: `passwd` MUST then
 report that the password did change, rather than reporting a plain failure,
 since the alternative leaves the user holding a password their vault no longer
 accepts.
+
+Being atomic, the write also leaves the previous vault at `vault.pgv.bak` — and
+that copy still opens under the **old** master password. Whenever the rotation
+reaches disk, durably or not, `passwd` MUST say so and name the file, so that
+someone rotating after a suspected exposure knows the exposure is not over until
+they delete it (§3.4).
 
 ### Exit codes
 

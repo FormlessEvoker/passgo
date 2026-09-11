@@ -83,5 +83,11 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 		fmt.Fprintln(os.Stderr, "master password changed")
 	}
 
+	// Either way, a rotation that reached disk left the previous vault
+	// at path+".bak" (§3.4 step 3) — still readable under the password
+	// just replaced.
+	if outcome.Committed() {
+		warnStaleBackup(os.Stderr, vaultPath)
+	}
 	return code
 }

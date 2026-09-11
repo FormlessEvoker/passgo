@@ -1369,6 +1369,69 @@ func TestMutatingCommandsReportANonDurableWrite(t *testing.T) {
 	}
 }
 
+// TestPasswdWarnsTheBackupKeepsTheOldPassword covers the consequence
+// of §3.4 step 3 that is specific to a rotation: the atomic write
+// leaves the previous vault at path+".bak", and that copy still opens
+// with the password just replaced. Someone rotating because the old
+// password may have leaked has not ended the exposure, and nothing
+// else tells them.
+func TestPasswdWarnsTheBackupKeepsTheOldPassword(t *testing.T) {
+	path := withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "s3cr3t\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, ".bak") || !strings.Contains(out, "OLD master password") {
+		t.Errorf("passwd did not warn about the stale backup: %q", out)
+	}
+
+	// The warning has to be true, secrets included.
+	t.Setenv("PASSGO_VAULT", path+".bak")
+	got, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("backup does not open under the old password: exit = %d", getCode)
+	}
+	if strings.TrimSpace(got) != "s3cr3t" {
+		t.Errorf("secret read back from the backup = %q, want %q", strings.TrimSpace(got), "s3cr3t")
+	}
+}
+
+func TestWarnStaleBackupNamesTheFileAndTheOldPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := os.WriteFile(path+".bak", []byte("previous vault"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	warnStaleBackup(&buf, path)
+	out := buf.String()
+
+	if !strings.Contains(out, path+".bak") {
+		t.Errorf("warning does not name the backup file: %q", out)
+	}
+	if !strings.Contains(out, "OLD master password") {
+		t.Errorf("warning does not say which password opens it: %q", out)
+	}
+}
+
+// TestWarnStaleBackupIsSilentWithoutABackup keeps the notice from
+// claiming a file that is not there — `init` writes no backup, since
+// there was no vault to copy.
+func TestWarnStaleBackupIsSilentWithoutABackup(t *testing.T) {
+	var buf bytes.Buffer
+	warnStaleBackup(&buf, filepath.Join(t.TempDir(), "vault.pgv"))
+	if buf.Len() != 0 {
+		t.Errorf("warned about a backup that does not exist: %q", buf.String())
+	}
+}
+
 func TestVaultFlagOverridesEnv(t *testing.T) {
 	t.Setenv("PASSGO_VAULT", "/should/not/be/used")
 	t.Setenv("PASSGO_MASTER", "correct horse battery staple")

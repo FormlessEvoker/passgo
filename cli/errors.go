@@ -57,3 +57,27 @@ func reportWrite(outcome vault.WriteOutcome, err error, tookEffect string) int {
 	}
 	return ExitGeneral
 }
+
+// warnStaleBackup tells the user about the copy of the previous vault
+// that §3.4 step 3 leaves at path+".bak" on every overwriting write.
+//
+// For add/edit/mv/rm that copy is harmless: a previous version under
+// the same master password. After `passwd` it is not. It still opens
+// with the password just replaced, so a rotation prompted by a
+// suspected exposure has not actually ended that exposure — and §1
+// puts a vault file in someone else's hands squarely in scope.
+//
+// The file is not deleted automatically. It is the user's only way
+// back if the new password is lost, and removing a backup as a side
+// effect of a password change is its own kind of surprise. Saying so
+// and leaving the choice is the honest middle.
+func warnStaleBackup(w io.Writer, vaultPath string) {
+	backup := vaultPath + ".bak"
+	if _, err := os.Stat(backup); err != nil {
+		// No overwriting write happened, so there is no backup to warn
+		// about — nothing to say rather than something untrue.
+		return
+	}
+	fmt.Fprintf(w, "NOTE: %s still holds the previous vault and opens with your OLD master password.\n", backup)
+	fmt.Fprintln(w, "If you rotated because that password may have been exposed, delete it.")
+}

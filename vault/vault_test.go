@@ -367,3 +367,45 @@ func TestWriteAtomicReportsCommittedButNotDurable(t *testing.T) {
 		t.Errorf("stray file left in vault directory: %s", e.Name())
 	}
 }
+
+// TestWriteAtomicNoOverwriteReportsCommittedButNotDurable is the
+// init-path counterpart. os.Link is this function's commit point, so
+// a directory sync failing after it leaves a created vault behind —
+// not nothing. Reporting that as a plain failure would tell someone
+// no vault exists while one sits on disk.
+func TestWriteAtomicNoOverwriteReportsCommittedButNotDurable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+
+	orig := syncDir
+	syncDir = func(string) error { return errors.New("simulated fsync failure") }
+	defer func() { syncDir = orig }()
+
+	err := WriteAtomicNoOverwrite(path, []byte("fresh vault"))
+	if !errors.Is(err, ErrNotDurable) {
+		t.Fatalf("WriteAtomicNoOverwrite with a failing dir sync: err = %v, want ErrNotDurable", err)
+	}
+
+	// The link committed, so the vault must exist with its contents.
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("vault is missing after a committed link: %v", readErr)
+	}
+	if string(got) != "fresh vault" {
+		t.Errorf("vault contents = %q, want %q", got, "fresh vault")
+	}
+
+	// The temp file is still cleaned up: os.Link leaves both names,
+	// and only the vault name should survive.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "vault.pgv" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory contains %v, want only vault.pgv", names)
+	}
+}

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/FormlessEvoker/passgo/crypto"
@@ -19,4 +20,19 @@ func handleOpenError(err error) int {
 		return ExitAuthFailed
 	}
 	return ExitGeneral
+}
+
+// reportNotDurable explains a write that reached its commit point but
+// could not be confirmed durable. Both `init` and `passwd` can hit
+// this, and both MUST say the change took effect (§3.4): the
+// alternative reports a failure for a write that is already live.
+//
+// happened names what did take effect, since that differs per
+// command; the rest is identical and lives here so the two cannot
+// drift into describing the same condition differently.
+func reportNotDurable(w io.Writer, happened string) {
+	fmt.Fprintf(w, "IMPORTANT: %s\n", happened)
+	fmt.Fprintln(w, "Only the directory sync failed, so it may not survive an immediate power loss.")
+	fmt.Fprintln(w, "No command can show you this: the new state is already what every read sees.")
+	fmt.Fprintln(w, "To force it to disk, run `sync`, or make another change to the vault.")
 }

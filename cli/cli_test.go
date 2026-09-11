@@ -1148,6 +1148,32 @@ func TestPasswdOrdinaryFailureOmitsTheChangedNotice(t *testing.T) {
 	}
 }
 
+// TestReportNotDurableStatesTheChangeTookEffect covers the wording
+// both `init` and `passwd` depend on. The one thing it must never do
+// is read as a failure, and it must not send the reader off to
+// confirm the state — §3.4 notes that no read can distinguish it.
+func TestReportNotDurableStatesTheChangeTookEffect(t *testing.T) {
+	var buf bytes.Buffer
+	reportNotDurable(&buf, "the thing WAS done.")
+	out := buf.String()
+
+	if !strings.Contains(out, "the thing WAS done.") {
+		t.Errorf("caller's subject missing: %q", out)
+	}
+	for _, want := range []string{"IMPORTANT", "power loss", "sync"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	// Verifying by reading is exactly what cannot work here, so the
+	// message must not suggest it.
+	for _, forbidden := range []string{"passgo ls", "verify", "Verify"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("output tells the reader to verify by reading (%q): %q", forbidden, out)
+		}
+	}
+}
+
 func TestVaultFlagOverridesEnv(t *testing.T) {
 	t.Setenv("PASSGO_VAULT", "/should/not/be/used")
 	t.Setenv("PASSGO_MASTER", "correct horse battery staple")

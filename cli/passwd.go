@@ -87,10 +87,7 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 			// already requires the new password. Saying only "error"
 			// here would send the user back to a password that no
 			// longer opens their vault.
-			fmt.Fprintln(os.Stderr, "IMPORTANT: the master password WAS changed — use the new one from now on.")
-			fmt.Fprintln(os.Stderr, "Only the directory sync failed, so the rename may not survive an immediate power loss.")
-			fmt.Fprintln(os.Stderr, "No command can show you this: the new vault is already what every read sees.")
-			fmt.Fprintln(os.Stderr, "To force it to disk, run `sync`, or make any other change to the vault.")
+			reportNotDurable(os.Stderr, "the master password WAS changed — use the new one from now on.")
 		}
 		return ExitGeneral
 	}

@@ -11,11 +11,16 @@ package vault
 // that was created, or a master password that was changed, while an
 // error was returned.
 //
-// It is deliberately the only such hook in the module. Faking each
-// layer's own write call instead would let store and cli tests
-// exercise their handlers while skipping the code that actually
+// It is deliberately the only such hook exported from the module.
+// Faking each layer's own write call instead would let store and cli
+// tests exercise their handlers while skipping the code that actually
 // produces the condition; injecting here means every layer's test
 // runs the real write path and the real error.
+//
+// The package also has an unexported syncFile seam (io.go) for the
+// file syncs. That one stays unexported because everything it can
+// provoke happens before the commit point, which needs no special
+// handling anywhere above vault.
 //
 // Tests using it must not run in parallel with other vault writers,
 // since it replaces process-wide state. Production code must never

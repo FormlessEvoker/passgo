@@ -45,6 +45,20 @@ var ErrNotDurable = errors.New("vault: write installed but directory fsync faile
 // replace it — the single injection point for the whole module.
 var syncDir = fsyncDir
 
+// syncFile performs the file fsync that makes a file's *contents*
+// durable, as opposed to the directory entry naming it. Both writes
+// that need it go through here — the temp file (step 2 of §3.4) and
+// the backup copy (step 3) — so the package requests file durability
+// in exactly one place, and a test can intercept it in exactly one
+// place.
+//
+// It is unexported, with no counterpart to FailSyncDir. The failures
+// it provokes all land before the commit point, where every layer
+// above already behaves identically (WriteFailed, original vault
+// untouched); only the post-commit condition needs to be reachable
+// from other packages' tests.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
 // WriteAtomic writes data to path, overwriting an existing vault only
 // via an atomic rename — never truncating it in place — per
 // SPECIFICATION.md §3.4:
@@ -164,7 +178,7 @@ func writeTemp(dir string, data []byte) (string, error) {
 		tmp.Close()
 		return tmpPath, err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncFile(tmp); err != nil {
 		tmp.Close()
 		return tmpPath, err
 	}
@@ -225,7 +239,7 @@ func copyFile(src, dst string) error {
 		f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		f.Close()
 		return err
 	}

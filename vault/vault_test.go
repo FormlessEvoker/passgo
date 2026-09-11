@@ -467,3 +467,101 @@ func TestWriteOutcomeStringRejectsUndefined(t *testing.T) {
 		t.Errorf("WriteOutcome(42).String() = %q, want it to name itself invalid and show 42", got)
 	}
 }
+
+// TestWriteAtomicSyncsBackupBeforeRename covers step 3's fsync
+// directly: not that the backup has the right bytes, which a plain
+// read already shows, but that those bytes were pushed to disk, and
+// pushed there while the old vault was still the live one.
+//
+// The ordering is the whole point. A backup synced after the rename
+// would be synced after the thing it is a backup of had already been
+// replaced, leaving a window where neither copy is safe. So the hook
+// reads the live vault at the moment the backup is synced and the
+// test asserts it still holds the previous version.
+func TestWriteAtomicSyncsBackupBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+
+	first := []byte("first version")
+	if _, err := WriteAtomic(path, first); err != nil {
+		t.Fatal(err)
+	}
+
+	var syncedBackup bool
+	var liveVaultAtBackupSync []byte
+	orig := syncFile
+	syncFile = func(f *os.File) error {
+		if strings.HasSuffix(f.Name(), ".bak") {
+			syncedBackup = true
+			liveVaultAtBackupSync, _ = os.ReadFile(path)
+		}
+		return orig(f)
+	}
+	defer func() { syncFile = orig }()
+
+	if _, err := WriteAtomic(path, []byte("second version")); err != nil {
+		t.Fatal(err)
+	}
+
+	if !syncedBackup {
+		t.Fatal("the backup was never fsynced; its contents would live only in the page cache")
+	}
+	if !bytes.Equal(liveVaultAtBackupSync, first) {
+		t.Errorf("live vault at the backup's sync = %q, want %q — the backup must be synced before the rename",
+			liveVaultAtBackupSync, first)
+	}
+}
+
+// TestWriteAtomicBackupSyncFailureAbortsWrite is the other half: a
+// backup that cannot be made durable must stop the write rather than
+// proceed to the rename. Step 3 is before the commit point, so this
+// is an ordinary pre-commit failure — WriteFailed, previous vault
+// untouched, no temp file left behind — and specifically NOT
+// ErrNotDurable, which means the opposite (already committed).
+func TestWriteAtomicBackupSyncFailureAbortsWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vault.pgv")
+
+	first := []byte("first version")
+	if _, err := WriteAtomic(path, first); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := syncFile
+	syncFile = func(f *os.File) error {
+		if strings.HasSuffix(f.Name(), ".bak") {
+			return errors.New("simulated backup sync failure")
+		}
+		return orig(f)
+	}
+	defer func() { syncFile = orig }()
+
+	outcome, err := WriteAtomic(path, []byte("second version"))
+	if err == nil {
+		t.Fatal("WriteAtomic with a failing backup sync: err = nil, want an error")
+	}
+	if outcome != WriteFailed {
+		t.Errorf("outcome = %v, want %v", outcome, WriteFailed)
+	}
+	if errors.Is(err, ErrNotDurable) {
+		t.Error("a failed backup sync is pre-commit; reporting ErrNotDurable would claim the write committed")
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, first) {
+		t.Errorf("vault = %q, want %q — an aborted write must leave the previous vault", got, first)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".tmp" {
+			t.Errorf("leftover temp file after an aborted write: %s", e.Name())
+		}
+	}
+}

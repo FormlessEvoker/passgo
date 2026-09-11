@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,38 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// ErrNotDurable reports a write that was installed but may not
+// survive a crash: the rename completed, so the new contents are
+// already what any reader sees, but the containing directory could
+// not be fsynced. The data is live; only its durability is in doubt.
+//
+// It is kept distinct from every other write error because the
+// caller's recovery is the opposite. An error before the rename means
+// nothing changed and the old file stands. This means everything
+// changed. Reporting the two the same way would tell a user their
+// `passwd` failed when the vault already requires the new password —
+// the one mistake that can strand someone outside their own vault.
+var ErrNotDurable = errors.New("vault: write installed but directory fsync failed")
+
+// syncDir performs the directory fsync that makes a rename or link
+// durable. It is a variable so that FailSyncDir (testhooks.go) can
+// replace it — the single injection point for the whole module.
+var syncDir = fsyncDir
+
+// syncFile performs the file fsync that makes a file's *contents*
+// durable, as opposed to the directory entry naming it. Both writes
+// that need it go through here — the temp file (step 2 of §3.4) and
+// the backup copy (step 3) — so the package requests file durability
+// in exactly one place, and a test can intercept it in exactly one
+// place.
+//
+// It is unexported, with no counterpart to FailSyncDir. The failures
+// it provokes all land before the commit point, where every layer
+// above already behaves identically (WriteFailed, original vault
+// untouched); only the post-commit condition needs to be reachable
+// from other packages' tests.
+var syncFile = func(f *os.File) error { return f.Sync() }
+
 // WriteAtomic writes data to path, overwriting an existing vault only
 // via an atomic rename — never truncating it in place — per
 // SPECIFICATION.md §3.4:
@@ -33,20 +66,36 @@ func ReadFile(path string, warn io.Writer) ([]byte, error) {
 //  1. write to a temp file in the same directory (same filesystem, so
 //     the rename is atomic), mode 0600;
 //  2. fsync the temp file;
-//  3. copy the current vault to path+".bak" if one exists;
+//  3. copy the current vault to path+".bak" if one exists, fsyncing
+//     that copy;
 //  4. rename the temp file over path;
 //  5. fsync the containing directory.
 //
-// If any step fails, the temp file is removed and the original vault
-// (if any) is left untouched.
-func WriteAtomic(path string, data []byte) (err error) {
+// Step 4 is the commit point, and failures on either side of it mean
+// opposite things. If any step before the rename fails, the temp file
+// is removed and the original vault (if any) is left untouched —
+// WriteFailed. If the rename succeeds and only step 5 fails, the new
+// data is already installed and visible to every reader —
+// WriteCommittedNotDurable, alongside an error wrapping ErrNotDurable.
+//
+// The returned outcome, not the error, is what callers branch on to
+// learn which of those happened. See WriteOutcome for why.
+//
+// Step 3 leaves path+".bak" holding the previous vault under whatever
+// master password was in force when it was written. After a password
+// change that copy still opens with the old one — §3.4 records the
+// consequence, and `passwd` tells the user.
+func WriteAtomic(path string, data []byte) (outcome WriteOutcome, err error) {
 	dir := filepath.Dir(path)
 	tmpPath, err := writeTemp(dir, data)
 	if err != nil {
-		return err
+		return WriteFailed, err
 	}
+	// Cleanup applies only before the rename. Past it the temp file no
+	// longer exists under that name, and the write has committed.
+	renamed := false
 	defer func() {
-		if err != nil {
+		if err != nil && !renamed {
 			os.Remove(tmpPath)
 		}
 	}()
@@ -54,7 +103,7 @@ func WriteAtomic(path string, data []byte) (err error) {
 	switch _, statErr := os.Stat(path); {
 	case statErr == nil:
 		if err = copyFile(path, path+".bak"); err != nil {
-			return err
+			return WriteFailed, err
 		}
 	case os.IsNotExist(statErr):
 		// No existing vault, so nothing to back up.
@@ -62,13 +111,19 @@ func WriteAtomic(path string, data []byte) (err error) {
 		// A permission error or similar: not knowing whether a vault
 		// exists here means not knowing whether a backup is owed, so
 		// fail loudly rather than silently skipping it.
-		return statErr
+		return WriteFailed, statErr
 	}
 
 	if err = os.Rename(tmpPath, path); err != nil {
-		return err
+		return WriteFailed, err
 	}
-	return fsyncDir(dir)
+	renamed = true
+
+	if syncErr := syncDir(dir); syncErr != nil {
+		err = fmt.Errorf("%w: %v", ErrNotDurable, syncErr)
+		return WriteCommittedNotDurable, err
+	}
+	return WriteCommitted, nil
 }
 
 // WriteAtomicNoOverwrite is WriteAtomic's counterpart for `init`: it
@@ -76,18 +131,29 @@ func WriteAtomic(path string, data []byte) (err error) {
 // stat-then-write check, os.Link is atomic — it fails with
 // os.ErrExist if path already exists, so there is no window between
 // checking and creating for a concurrent writer to land in.
-func WriteAtomicNoOverwrite(path string, data []byte) (err error) {
+//
+// The link is this function's commit point, and it carries the same
+// outcome distinction WriteAtomic does: a failure to fsync the
+// directory afterwards leaves a created vault behind, not nothing.
+func WriteAtomicNoOverwrite(path string, data []byte) (outcome WriteOutcome, err error) {
 	dir := filepath.Dir(path)
 	tmpPath, err := writeTemp(dir, data)
 	if err != nil {
-		return err
+		return WriteFailed, err
 	}
 	defer os.Remove(tmpPath)
 
 	if err = os.Link(tmpPath, path); err != nil {
-		return err
+		return WriteFailed, err
 	}
-	return fsyncDir(dir)
+	// Past the commit point here too: the link is what makes the vault
+	// exist, so a failed directory fsync leaves a created vault behind
+	// rather than nothing.
+	if syncErr := syncDir(dir); syncErr != nil {
+		err = fmt.Errorf("%w: %v", ErrNotDurable, syncErr)
+		return WriteCommittedNotDurable, err
+	}
+	return WriteCommitted, nil
 }
 
 // writeTemp creates the vault's containing directory if needed and
@@ -112,7 +178,7 @@ func writeTemp(dir string, data []byte) (string, error) {
 		tmp.Close()
 		return tmpPath, err
 	}
-	if err := tmp.Sync(); err != nil {
+	if err := syncFile(tmp); err != nil {
 		tmp.Close()
 		return tmpPath, err
 	}
@@ -138,12 +204,46 @@ func fsyncDir(dir string) error {
 	return d.Close()
 }
 
+// copyFile copies src to dst, making dst's contents durable before it
+// returns.
+//
+// The sync is not incidental. This is step 3 of §3.4 — the backup
+// taken immediately before the live vault is replaced — and after
+// `passwd` it is the user's only way back to the vault the previous
+// master password opens. os.WriteFile would leave those bytes in the
+// page cache: the step 5 directory fsync makes dst's *name* durable,
+// never its contents, so a crash could leave a backup that exists and
+// is empty while the new vault is already live.
+//
+// Because step 3 runs before the rename, a failure here is still a
+// pre-commit failure: the caller returns WriteFailed and the original
+// vault stands.
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, vaultMode)
+
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, vaultMode)
+	if err != nil {
+		return err
+	}
+	// O_CREATE applies the mode only when it creates the file, and a
+	// .bak from an earlier run may already be sitting there under
+	// looser permissions. It holds a whole vault; set them regardless.
+	if err := f.Chmod(vaultMode); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := syncFile(f); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ResolvePath returns the vault file path, per SPECIFICATION.md §3.3:

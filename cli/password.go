@@ -16,6 +16,14 @@ import (
 // error, not read from stdin.
 var ErrNoTTY = errors.New("no TTY available and $PASSGO_MASTER is not set")
 
+// ErrNoNewPasswordSource is ErrNoTTY's counterpart for `passwd`'s new
+// password. It is a separate error because ErrNoTTY's message names
+// $PASSGO_MASTER, which is very likely set when this fires and is
+// ignored on purpose (§4) — reporting it would send the user to
+// configure the one source that cannot help them. Like ErrNoTTY it is
+// a usage error, exit code 2.
+var ErrNoNewPasswordSource = errors.New("no TTY available and neither --new-master-password-file nor $PASSGO_NEW_MASTER_FILE is set")
+
 // readPassword returns the master password. In order of precedence:
 // passwordFile if non-empty (from --master-password-file or
 // $PASSGO_MASTER_FILE), then $PASSGO_MASTER (documented as
@@ -48,6 +56,34 @@ func readNewPassword(passwordFile string) (string, error) {
 	p2, err := promptTTY("Confirm master password: ")
 	if err != nil {
 		return "", err
+	}
+	if p1 != p2 {
+		return "", errors.New("passwords did not match")
+	}
+	return p1, nil
+}
+
+// readReplacementPassword returns the new master password for
+// `passwd`: from newPasswordFile if non-empty (from
+// --new-master-password-file or $PASSGO_NEW_MASTER_FILE), otherwise
+// from a TTY double prompt that must match.
+//
+// It deliberately does not fall back to $PASSGO_MASTER the way
+// readNewPassword does. That variable holds the *current* password,
+// so honouring it here would quietly rotate the vault to the password
+// it already has and report success — the one outcome a user running
+// `passwd` never wants.
+func readReplacementPassword(newPasswordFile string) (string, error) {
+	if newPasswordFile != "" {
+		return readPasswordFile(newPasswordFile, os.Stderr)
+	}
+	p1, err := promptTTY("New master password: ")
+	if err != nil {
+		return "", replaceNoTTY(err)
+	}
+	p2, err := promptTTY("Confirm new master password: ")
+	if err != nil {
+		return "", replaceNoTTY(err)
 	}
 	if p1 != p2 {
 		return "", errors.New("passwords did not match")
@@ -109,4 +145,13 @@ func promptTTY(prompt string) (string, error) {
 		return "", err
 	}
 	return string(pw), nil
+}
+
+// replaceNoTTY swaps ErrNoTTY for ErrNoNewPasswordSource, leaving any
+// other error alone.
+func replaceNoTTY(err error) error {
+	if errors.Is(err, ErrNoTTY) {
+		return ErrNoNewPasswordSource
+	}
+	return err
 }

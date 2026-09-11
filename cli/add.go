@@ -71,13 +71,19 @@ func runAdd(vaultPath, passwordFile string, args []string) int {
 		Updated:  entry.Now(),
 	})
 
-	if err := s.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return ExitGeneral
+	outcome, err := s.Save()
+
+	// A generated secret is printed whenever the entry reached disk,
+	// including a write that committed without being confirmed
+	// durable. It is stored either way, and nothing else in this run
+	// reveals it — `show` masks the field — so withholding it would
+	// leave the user holding an entry whose password they never saw.
+	if outcome.Committed() && flags.wantGen {
+		printSecret(secret)
 	}
 
-	if flags.wantGen {
-		printSecret(secret)
+	if err != nil {
+		return reportWrite(outcome, err, fmt.Sprintf("the entry %q WAS added.", name))
 	}
 	return ExitOK
 }

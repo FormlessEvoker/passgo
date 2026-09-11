@@ -221,12 +221,37 @@ Every write is atomic and never truncates the existing vault in place:
 2. Write to a temporary file in the *same directory* (same filesystem, so the
    rename is atomic), mode `0600`.
 3. `fsync` the temporary file.
-4. Copy the current vault to `vault.pgv.bak` if one exists.
+4. Copy the current vault to `vault.pgv.bak` if one exists, mode `0600`, and
+   `fsync` that copy.
 5. `rename` the temporary file over the vault.
 6. `fsync` the containing directory.
 
-If any step fails, the temporary file is removed and the original vault is left
-untouched.
+If any step fails *before* the rename, the temporary file is removed and the
+original vault is left untouched.
+
+The rename is the commit point, and step 6 comes after it. A failure to fsync
+the directory therefore leaves the new vault already in place and visible to
+every reader, with only its survival across a power loss in doubt.
+
+This state cannot be detected by reading. The rename is applied in the operating
+system's page cache, so every subsequent read on the running machine resolves
+through it and sees the new vault; only a crash before the cache is written back
+can reveal the difference. A command reporting this condition MUST therefore not
+send the user to verify it with a read — there is nothing for a read to find. This is
+reported as a distinct error from every other write failure, because the two
+demand opposite responses: before the rename nothing changed, after it
+everything did. Treating them alike would tell a user that a write failed when
+it had in fact taken effect — which for `passwd` means directing them back to a
+master password that no longer opens their vault.
+
+A write therefore has **three** outcomes, not two — *failed*, *committed*, and
+*committed but not durable* — and every caller MUST distinguish all three. The
+first two are the ordinary error and success; the third is both at once. An
+error value alone cannot carry this, because the near-universal reading of a
+non-nil error is "it did not happen", and for the third outcome that is exactly
+backwards. The outcome is therefore reported separately from the error, so that
+handling it is a condition of calling a write at all rather than something each
+caller has to remember.
 
 `init`'s no-overwrite guarantee (§6) is enforced the same way, but step 5 uses
 a create-only link instead of an unconditional rename: the temporary file is
@@ -238,6 +263,34 @@ link either creates the file or fails, with nothing in between.
 Every command that mutates the vault also re-reads the file immediately
 before this sequence and compares it against what it read at open, refusing
 to proceed if they differ — see "Concurrent writers" in §1.
+
+#### The backup copy
+
+Step 4 leaves `vault.pgv.bak` holding the vault as it stood before the write,
+encrypted under whatever master password was in force at that moment. For
+`add`, `edit`, `mv`, and `rm` that is simply a previous version under the
+current password.
+
+The backup MUST be fsynced before the rename, not left to the step 6 directory
+fsync. That fsync makes the backup's *name* durable, never its contents: a
+crash between the two would leave a `vault.pgv.bak` that exists and is empty
+while the new vault is already live. Since the backup is the only way back to
+the vault the previous password opens, a backup that survives as an empty file
+is worse than none — it looks like a rollback and is not one. Failing to write
+or sync it MUST abort the write before the rename, leaving the original vault
+in place.
+
+After `passwd` it is not. The backup still opens with the password that was
+just replaced, so a rotation prompted by a suspected exposure has not ended
+that exposure: §1 puts a vault file in someone else's hands squarely in scope,
+and this is one such file, sitting beside the live vault in the same directory
+that gets synced or backed up. `passwd` MUST therefore tell the user the backup
+exists and which password opens it.
+
+It MUST NOT delete the backup itself. That copy is the user's only way back if
+the new password turns out to be lost or mistyped, and removing it as a side
+effect of a password change would be its own kind of surprise. Stating the
+consequence and leaving the decision is the correct division.
 
 ### 3.5 Versioning and compatibility
 
@@ -335,8 +388,23 @@ If no TTY is available and neither the password file nor `$PASSGO_MASTER` is
 set, the command fails with exit code 2 rather than silently reading from
 stdin.
 
-Each command performs exactly one derive-and-unlock. There is no session,
-agent, or cached key in v1 — the master password is entered every time. At the
+`passwd` needs two passwords. The current one is read exactly as above. The new
+one comes from `--new-master-password-file <path>` (or
+`$PASSGO_NEW_MASTER_FILE`) when given, and otherwise from a TTY prompt asked
+twice that must match. It deliberately does **not** fall back to
+`$PASSGO_MASTER`, which holds the current password.
+
+The rule that matters is about the outcome, not the source: **`passwd` MUST
+reject a new password equal to the current one**, with exit code 2, however the
+two arrived — the same file given to both flags, the same string typed at both
+prompts, or two sources that happen to hold the same value. Rotating a vault to
+the password it already has and reporting success is the one result someone
+running `passwd` never wants, and declining to read `$PASSGO_MASTER` for the new
+password closes only one route to it.
+
+Each command performs exactly one derive-and-unlock, `passwd` excepted — it
+verifies the old password and derives the new one, so it pays for two. There is
+no session, agent, or cached key in v1 — the master password is entered every time. At the
 parameters in §2.1 an unlock costs roughly half a second, which is acceptable
 for a personal tool and removes an entire class of cached-credential
 vulnerabilities.
@@ -475,9 +543,31 @@ resolved at all, so an absent, unreadable, or unresolvable vault cannot stop it
 running — a generator that needs a vault to work would not be standalone.
 
 ### `passgo passwd`
-Prompts for the current master password, then the new one twice. Generates a
-**fresh salt and nonce**, re-derives the key, and rewrites the vault. Entries
-are unchanged.
+Prompts for the current master password, then the new one twice (§4 covers where
+each may come from non-interactively). Generates a **fresh salt and nonce**,
+re-derives the key, and rewrites the vault. Entries are unchanged.
+
+The vault is opened, and the current password thereby verified, before the new
+one is asked for: a mistyped current password should cost one prompt, not three.
+A new password equal to the current one is refused with exit code 2 (§4).
+
+This is the one command that performs two key derivations rather than the single
+one §4 describes — the old password must be verified and the new one derived —
+so it costs roughly twice what other commands do.
+
+The write is atomic and takes the same pre-write conflict check as every other
+mutation, so a failure before the rename leaves the vault readable under the old
+password rather than under neither. In the one case where a write fails *after*
+the rename (§3.4), the rotation has already taken effect: `passwd` MUST then
+report that the password did change, rather than reporting a plain failure,
+since the alternative leaves the user holding a password their vault no longer
+accepts.
+
+Being atomic, the write also leaves the previous vault at `vault.pgv.bak` — and
+that copy still opens under the **old** master password. Whenever the rotation
+reaches disk, durably or not, `passwd` MUST say so and name the file, so that
+someone rotating after a suspected exposure knows the exposure is not over until
+they delete it (§3.4).
 
 ### Exit codes
 

@@ -25,6 +25,7 @@ Usage:
   passgo mv <query> <new-name>
   passgo rm <query> [-f]
   passgo gen [length]
+  passgo passwd [--new-master-password-file <path>]
   passgo --version | --help
 
 Global flags:
@@ -89,6 +90,8 @@ func Run(args []string) int {
 		return runMv(vaultPath, passwordFile, cmdArgs)
 	case "rm":
 		return runRm(vaultPath, passwordFile, cmdArgs)
+	case "passwd":
+		return runPasswd(vaultPath, passwordFile, cmdArgs)
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", cmd)
 		printUsage(os.Stderr)

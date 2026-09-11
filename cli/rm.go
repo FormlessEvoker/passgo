@@ -67,9 +67,9 @@ func runRm(vaultPath, passwordFile string, args []string) int {
 
 	s.Payload.Entries = append(s.Payload.Entries[:i], s.Payload.Entries[i+1:]...)
 
-	if err := s.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return ExitGeneral
+	outcome, err := s.Save()
+	if err != nil {
+		return reportWrite(outcome, err, fmt.Sprintf("the entry %q WAS deleted.", target.Name))
 	}
 	return ExitOK
 }

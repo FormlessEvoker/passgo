@@ -46,8 +46,8 @@ passgo add github.com -u me@example.com -g   # -g generates and stores a strong 
 passgo get github.com | pbcopy               # copy the password, print nothing
 ```
 
-Everything below is implemented except `passwd`, which is designed (see
-[SPECIFICATION.md](SPECIFICATION.md)) but not built yet.
+Every command in the table below is implemented. Full semantics and exit codes
+are in [SPECIFICATION.md](SPECIFICATION.md).
 
 ## Commands
 
@@ -62,7 +62,7 @@ Everything below is implemented except `passwd`, which is designed (see
 | `passgo mv <query> <new-name>` | Rename an entry, leaving its other fields alone. | ✅ |
 | `passgo rm <query>` | Delete an entry. | ✅ |
 | `passgo gen [length]` | Generate a password without storing it. | ✅ |
-| `passgo passwd` | Change the master password and re-encrypt the vault. | not yet |
+| `passgo passwd` | Change the master password and re-encrypt the vault. | ✅ |
 
 Four things put a secret on stdout: `get`, `gen`, and the `-g` flag on `add` and
 `edit`. All four print the secret alone — no label, no quoting — and add a

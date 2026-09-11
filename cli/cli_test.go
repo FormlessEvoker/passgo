@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/FormlessEvoker/passgo/crypto"
+	"github.com/FormlessEvoker/passgo/vault"
 )
 
 // withTempVault points PASSGO_VAULT at a fresh temp path and sets
@@ -30,6 +32,36 @@ func withStdin(t *testing.T, text string) {
 	orig := stdin
 	stdin = strings.NewReader(text)
 	t.Cleanup(func() { stdin = orig })
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// what was written to it, along with fn's return value. Diagnostics
+// and warnings all go to stderr, so this is where their content is
+// asserted.
+func captureStderr(t *testing.T, fn func() int) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	code := fn()
+
+	w.Close()
+	os.Stderr = orig
+
+	var buf strings.Builder
+	tmp := make([]byte, 4096)
+	for {
+		n, readErr := r.Read(tmp)
+		buf.Write(tmp[:n])
+		if readErr != nil {
+			break
+		}
+	}
+	return buf.String(), code
 }
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
@@ -58,6 +90,43 @@ func captureStdout(t *testing.T, fn func() int) (string, int) {
 		}
 	}
 	return buf.String(), code
+}
+
+// captureBoth redirects both streams for the duration of fn. Commands
+// that put a secret on stdout while reporting a problem on stderr need
+// both halves asserted in one run.
+func captureBoth(t *testing.T, fn func() int) (stdout, stderr string, code int) {
+	t.Helper()
+	ro, wo, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	re, we, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = wo, we
+
+	code = fn()
+
+	wo.Close()
+	we.Close()
+	os.Stdout, os.Stderr = origOut, origErr
+
+	read := func(f *os.File) string {
+		var buf strings.Builder
+		tmp := make([]byte, 4096)
+		for {
+			n, readErr := f.Read(tmp)
+			buf.Write(tmp[:n])
+			if readErr != nil {
+				break
+			}
+		}
+		return buf.String()
+	}
+	return read(ro), read(re), code
 }
 
 func TestInitCreatesVault(t *testing.T) {
@@ -884,6 +953,482 @@ func TestSecretsOmitTrailingNewlineWhenPiped(t *testing.T) {
 				t.Errorf("%s wrote a trailing newline to a pipe: %q", c.name, out)
 			}
 		})
+	}
+}
+
+// TestPasswdRotatesTheMasterPassword is the core of the command: the
+// old password must stop working and the new one must start.
+func TestPasswdRotatesTheMasterPassword(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "s3cr3t\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-n", "notes here", "-p"})
+
+	newFile := writePasswordFile(t, "a brand new master")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+
+	// The old password no longer opens the vault.
+	if code := Run([]string{"get", "github.com"}); code != ExitAuthFailed {
+		t.Errorf("old password still opens the vault: exit code = %d, want %d", code, ExitAuthFailed)
+	}
+
+	// The new one does, and the entry survived intact.
+	t.Setenv("PASSGO_MASTER", "a brand new master")
+	out, code := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if code != ExitOK {
+		t.Fatalf("new password does not open the vault: exit code = %d, want %d", code, ExitOK)
+	}
+	if strings.TrimSpace(out) != "s3cr3t" {
+		t.Errorf("secret = %q, want %q", strings.TrimSpace(out), "s3cr3t")
+	}
+
+	shown, code := captureStdout(t, func() int { return Run([]string{"show", "github.com"}) })
+	if code != ExitOK {
+		t.Fatalf("show exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(shown, "alice") || !strings.Contains(shown, "notes here") {
+		t.Errorf("passwd did not leave entries unchanged: %q", shown)
+	}
+}
+
+// TestPasswdGeneratesFreshSaltAndNonce checks §2.1's requirement
+// directly against the file header, which is where it is observable.
+func TestPasswdGeneratesFreshSaltAndNonce(t *testing.T) {
+	path := withTempVault(t)
+	Run([]string{"init"})
+
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newFile := writePasswordFile(t, "replacement")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Header layout per §3.1: salt at [18,34), nonce at [34,46).
+	if bytes.Equal(before[18:34], after[18:34]) {
+		t.Error("salt was not regenerated")
+	}
+	if bytes.Equal(before[34:46], after[34:46]) {
+		t.Error("nonce was not regenerated")
+	}
+}
+
+func TestPasswdWrongCurrentPasswordFails(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	t.Setenv("PASSGO_MASTER", "not the right one")
+	newFile := writePasswordFile(t, "replacement")
+	if code := Run([]string{"passwd", "--new-master-password-file", newFile}); code != ExitAuthFailed {
+		t.Errorf("passwd with wrong current password: exit code = %d, want %d", code, ExitAuthFailed)
+	}
+}
+
+// TestPasswdDoesNotReuseCurrentPasswordAsNew guards the §4 rule that
+// the new password never falls back to $PASSGO_MASTER. Without a new
+// password source and with no TTY, passwd must fail rather than
+// "rotate" the vault to the password it already has.
+func TestPasswdDoesNotReuseCurrentPasswordAsNew(t *testing.T) {
+	// With no new-password source this falls through to promptTTY,
+	// which blocks for input when /dev/tty is openable. Skip there
+	// rather than hanging someone's local `go test`; the assertion
+	// still runs anywhere without a controlling terminal, CI included.
+	if f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0); err == nil {
+		f.Close()
+		t.Skip("/dev/tty is available; passwd would prompt interactively and block")
+	}
+
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// PASSGO_MASTER is set by withTempVault and supplies the current
+	// password; nothing supplies a new one.
+	if code := Run([]string{"passwd"}); code == ExitOK {
+		t.Fatal("passwd succeeded with no new-password source; it must not reuse $PASSGO_MASTER")
+	}
+
+	// The vault must still open under the original password.
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("vault no longer opens under the original password: exit code = %d", code)
+	}
+}
+
+func TestPasswdNewPasswordFileEnvFallback(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	t.Setenv("PASSGO_NEW_MASTER_FILE", writePasswordFile(t, "from the environment"))
+	if code := Run([]string{"passwd"}); code != ExitOK {
+		t.Fatalf("passwd via $PASSGO_NEW_MASTER_FILE: exit code = %d, want %d", code, ExitOK)
+	}
+
+	t.Setenv("PASSGO_MASTER", "from the environment")
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("new password from env file does not open the vault: exit code = %d", code)
+	}
+}
+
+func TestPasswdRejectsUnknownFlagAndMissingValue(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	for _, args := range [][]string{
+		{"passwd", "--nope"},
+		{"passwd", "--new-master-password-file"},
+		{"passwd", "extra-positional"},
+	} {
+		if code := Run(args); code != ExitUsage {
+			t.Errorf("Run(%q): exit code = %d, want %d", args, code, ExitUsage)
+		}
+	}
+}
+
+// TestPasswdRejectsUnchangedPassword covers the §4 rule about the
+// outcome rather than the source: pointing both flags at the same
+// file is a route to rotating a vault to the password it already
+// has, which must be refused rather than reported as a success.
+func TestPasswdRejectsUnchangedPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	t.Setenv("PASSGO_VAULT", path)
+	// No $PASSGO_MASTER: both passwords come from files here.
+	t.Setenv("PASSGO_MASTER", "")
+
+	same := writePasswordFile(t, "one and the same")
+	if code := Run([]string{"--master-password-file", same, "init"}); code != ExitOK {
+		t.Fatalf("init exit code = %d, want %d", code, ExitOK)
+	}
+
+	code := Run([]string{"--master-password-file", same, "passwd", "--new-master-password-file", same})
+	if code != ExitUsage {
+		t.Errorf("passwd with the same file for both passwords: exit code = %d, want %d", code, ExitUsage)
+	}
+
+	// Distinct files holding identical text must be refused too — the
+	// rule is about the value, not the path.
+	twin := writePasswordFile(t, "one and the same")
+	if code := Run([]string{"--master-password-file", same, "passwd", "--new-master-password-file", twin}); code != ExitUsage {
+		t.Errorf("passwd with an identical new password: exit code = %d, want %d", code, ExitUsage)
+	}
+
+	// And the vault still opens under the original password.
+	if code := Run([]string{"--master-password-file", same, "ls"}); code != ExitOK {
+		t.Errorf("vault no longer opens after a refused rotation: exit code = %d", code)
+	}
+}
+
+// TestPasswdReportsANonDurableRotation covers §6's MUST: when the
+// write commits but the directory sync fails, the command must say
+// the password DID change. Reporting a plain failure would send the
+// user back to a password their vault no longer accepts.
+func TestPasswdReportsANonDurableRotation(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// The real rotation runs and commits; only the directory sync
+	// fails, which is the condition §6 requires be reported.
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitGeneral)
+	}
+	if !strings.Contains(out, "WAS changed") {
+		t.Errorf("stderr does not state that the password changed: %q", out)
+	}
+
+	// The claim has to be true: the vault really does want the new one.
+	t.Setenv("PASSGO_MASTER", "the replacement")
+	if code := Run([]string{"ls"}); code != ExitOK {
+		t.Errorf("vault does not open under the new password: exit code = %d", code)
+	}
+}
+
+// TestPasswdOrdinaryFailureOmitsTheChangedNotice is the other half:
+// a failure that did not commit must not claim the password changed.
+func TestPasswdOrdinaryFailureOmitsTheChangedNotice(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// A real failure that never reaches the commit point: with the
+	// vault's directory unwritable, the temp file cannot be created.
+	// No hook needed, so this exercises the genuine error path.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permissions would not be enforced")
+	}
+	dir := filepath.Dir(os.Getenv("PASSGO_VAULT"))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitGeneral)
+	}
+	if strings.Contains(out, "WAS changed") {
+		t.Errorf("a non-committing failure claimed the password changed: %q", out)
+	}
+}
+
+// TestReportNotDurableStatesTheChangeTookEffect covers the wording
+// both `init` and `passwd` depend on. The one thing it must never do
+// is read as a failure, and it must not send the reader off to
+// confirm the state — §3.4 notes that no read can distinguish it.
+func TestReportNotDurableStatesTheChangeTookEffect(t *testing.T) {
+	var buf bytes.Buffer
+	reportNotDurable(&buf, "the thing WAS done.")
+	out := buf.String()
+
+	if !strings.Contains(out, "the thing WAS done.") {
+		t.Errorf("caller's subject missing: %q", out)
+	}
+	for _, want := range []string{"IMPORTANT", "power loss", "sync"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q: %q", want, out)
+		}
+	}
+	// Verifying by reading is exactly what cannot work here, so the
+	// message must not suggest it.
+	for _, forbidden := range []string{"passgo ls", "verify", "Verify"} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("output tells the reader to verify by reading (%q): %q", forbidden, out)
+		}
+	}
+}
+
+// TestInitReportsANonDurableCreation covers runInit's half of the
+// §3.4 MUST. os.Link commits before the directory sync, so a sync
+// failure leaves a created vault behind; reporting a plain failure
+// would tell the user no vault exists while one sits on disk.
+func TestInitReportsANonDurableCreation(t *testing.T) {
+	path := withTempVault(t)
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, code := captureStderr(t, func() int { return Run([]string{"init"}) })
+	if code != ExitGeneral {
+		t.Fatalf("init exit code = %d, want %d", code, ExitGeneral)
+	}
+	if !strings.Contains(out, "WAS created") {
+		t.Errorf("stderr does not say the vault was created: %q", out)
+	}
+
+	// And the claim must be true.
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("vault is missing despite a committed link: %v", err)
+	}
+}
+
+// TestAddGenPrintsSecretOnANonDurableWrite covers the half of the
+// committed-write contract that is not a message. The entry reached
+// disk, so the generated secret is the one now stored — and nothing
+// else in this run reveals it, since `show` masks the field.
+// Withholding it would leave the user holding an entry whose password
+// they have never seen.
+func TestAddGenPrintsSecretOnANonDurableWrite(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"add", "github.com", "-u", "alice", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("add exit code = %d, want %d", code, ExitGeneral)
+	}
+	secret := strings.TrimSpace(out)
+	if secret == "" {
+		t.Fatal("generated secret was withheld for a write that committed")
+	}
+	if !strings.Contains(errOut, "WAS added") {
+		t.Errorf("stderr does not say the entry was added: %q", errOut)
+	}
+
+	// The printed secret has to be the stored one. Reading takes no
+	// write path, so the sync hook above does not interfere.
+	stored, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("entry is not in the vault despite a committed write: exit = %d", getCode)
+	}
+	if strings.TrimSpace(stored) != secret {
+		t.Errorf("printed secret %q is not the stored one %q", secret, strings.TrimSpace(stored))
+	}
+}
+
+// TestAddGenWithholdsSecretWhenNothingWasWritten is the other half: a
+// write that never reached its commit point stored nothing, so
+// printing a secret would be inventing one.
+func TestAddGenWithholdsSecretWhenNothingWasWritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permissions would not be enforced")
+	}
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// A real failure before the commit point: with the vault's
+	// directory unwritable, the temp file cannot be created.
+	dir := filepath.Dir(os.Getenv("PASSGO_VAULT"))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"add", "github.com", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("add exit code = %d, want %d", code, ExitGeneral)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("printed a secret for a write that never happened: %q", out)
+	}
+	if strings.Contains(errOut, "IMPORTANT") {
+		t.Errorf("claimed a non-committing write took effect: %q", errOut)
+	}
+}
+
+func TestEditGenPrintsSecretOnANonDurableWrite(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "the original\n")
+	Run([]string{"add", "github.com", "-p"})
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"edit", "github.com", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("edit exit code = %d, want %d", code, ExitGeneral)
+	}
+	secret := strings.TrimSpace(out)
+	if secret == "" || secret == "the original" {
+		t.Fatalf("generated secret was withheld for a write that committed: %q", secret)
+	}
+	if !strings.Contains(errOut, "WERE saved") {
+		t.Errorf("stderr does not say the changes were saved: %q", errOut)
+	}
+
+	stored, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("get after a committed edit: exit = %d", getCode)
+	}
+	if strings.TrimSpace(stored) != secret {
+		t.Errorf("printed secret %q is not the stored one %q", secret, strings.TrimSpace(stored))
+	}
+}
+
+// TestMutatingCommandsReportANonDurableWrite covers the commands with
+// no secret to print. Each still has to say its change took effect,
+// since the rename committed before the sync failed.
+func TestMutatingCommandsReportANonDurableWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"mv", []string{"mv", "github.com", "gitlab.com"}, "WAS renamed"},
+		{"rm", []string{"rm", "github.com", "-f"}, "WAS deleted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempVault(t)
+			Run([]string{"init"})
+			withStdin(t, "s3cr3t\n")
+			Run([]string{"add", "github.com", "-p"})
+
+			defer vault.FailSyncDir(errors.New("simulated"))()
+
+			out, code := captureStderr(t, func() int { return Run(tc.args) })
+			if code != ExitGeneral {
+				t.Fatalf("%s exit code = %d, want %d", tc.name, code, ExitGeneral)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("%s does not report that the change took effect: %q", tc.name, out)
+			}
+			if !strings.Contains(out, "IMPORTANT") {
+				t.Errorf("%s omits the committed-write notice: %q", tc.name, out)
+			}
+		})
+	}
+}
+
+// TestPasswdWarnsTheBackupKeepsTheOldPassword covers the consequence
+// of §3.4 step 3 that is specific to a rotation: the atomic write
+// leaves the previous vault at path+".bak", and that copy still opens
+// with the password just replaced. Someone rotating because the old
+// password may have leaked has not ended the exposure, and nothing
+// else tells them.
+func TestPasswdWarnsTheBackupKeepsTheOldPassword(t *testing.T) {
+	path := withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "s3cr3t\n")
+	Run([]string{"add", "github.com", "-u", "alice", "-p"})
+
+	newFile := writePasswordFile(t, "the replacement")
+	out, code := captureStderr(t, func() int {
+		return Run([]string{"passwd", "--new-master-password-file", newFile})
+	})
+	if code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
+	}
+	if !strings.Contains(out, ".bak") || !strings.Contains(out, "OLD master password") {
+		t.Errorf("passwd did not warn about the stale backup: %q", out)
+	}
+
+	// The warning has to be true, secrets included.
+	t.Setenv("PASSGO_VAULT", path+".bak")
+	got, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("backup does not open under the old password: exit = %d", getCode)
+	}
+	if strings.TrimSpace(got) != "s3cr3t" {
+		t.Errorf("secret read back from the backup = %q, want %q", strings.TrimSpace(got), "s3cr3t")
+	}
+}
+
+func TestWarnStaleBackupNamesTheFileAndTheOldPassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "vault.pgv")
+	if err := os.WriteFile(path+".bak", []byte("previous vault"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	warnStaleBackup(&buf, path)
+	out := buf.String()
+
+	if !strings.Contains(out, path+".bak") {
+		t.Errorf("warning does not name the backup file: %q", out)
+	}
+	if !strings.Contains(out, "OLD master password") {
+		t.Errorf("warning does not say which password opens it: %q", out)
+	}
+}
+
+// TestWarnStaleBackupIsSilentWithoutABackup keeps the notice from
+// claiming a file that is not there — `init` writes no backup, since
+// there was no vault to copy.
+func TestWarnStaleBackupIsSilentWithoutABackup(t *testing.T) {
+	var buf bytes.Buffer
+	warnStaleBackup(&buf, filepath.Join(t.TempDir(), "vault.pgv"))
+	if buf.Len() != 0 {
+		t.Errorf("warned about a backup that does not exist: %q", buf.String())
 	}
 }
 

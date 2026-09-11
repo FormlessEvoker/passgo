@@ -1142,8 +1142,8 @@ func TestPasswdReportsANonDurableRotation(t *testing.T) {
 	out, code := captureStderr(t, func() int {
 		return Run([]string{"passwd", "--new-master-password-file", newFile})
 	})
-	if code != ExitGeneral {
-		t.Fatalf("passwd exit code = %d, want %d", code, ExitGeneral)
+	if code != ExitOK {
+		t.Fatalf("passwd exit code = %d, want %d", code, ExitOK)
 	}
 	if !strings.Contains(out, "WAS changed") {
 		t.Errorf("stderr does not state that the password changed: %q", out)
@@ -1222,8 +1222,8 @@ func TestInitReportsANonDurableCreation(t *testing.T) {
 	defer vault.FailSyncDir(errors.New("simulated"))()
 
 	out, code := captureStderr(t, func() int { return Run([]string{"init"}) })
-	if code != ExitGeneral {
-		t.Fatalf("init exit code = %d, want %d", code, ExitGeneral)
+	if code != ExitOK {
+		t.Fatalf("init exit code = %d, want %d", code, ExitOK)
 	}
 	if !strings.Contains(out, "WAS created") {
 		t.Errorf("stderr does not say the vault was created: %q", out)
@@ -1250,8 +1250,8 @@ func TestAddGenPrintsSecretOnANonDurableWrite(t *testing.T) {
 	out, errOut, code := captureBoth(t, func() int {
 		return Run([]string{"add", "github.com", "-u", "alice", "-g"})
 	})
-	if code != ExitGeneral {
-		t.Fatalf("add exit code = %d, want %d", code, ExitGeneral)
+	if code != ExitOK {
+		t.Fatalf("add exit code = %d, want %d", code, ExitOK)
 	}
 	secret := strings.TrimSpace(out)
 	if secret == "" {
@@ -1315,8 +1315,8 @@ func TestEditGenPrintsSecretOnANonDurableWrite(t *testing.T) {
 	out, errOut, code := captureBoth(t, func() int {
 		return Run([]string{"edit", "github.com", "-g"})
 	})
-	if code != ExitGeneral {
-		t.Fatalf("edit exit code = %d, want %d", code, ExitGeneral)
+	if code != ExitOK {
+		t.Fatalf("edit exit code = %d, want %d", code, ExitOK)
 	}
 	secret := strings.TrimSpace(out)
 	if secret == "" || secret == "the original" {
@@ -1356,8 +1356,8 @@ func TestMutatingCommandsReportANonDurableWrite(t *testing.T) {
 			defer vault.FailSyncDir(errors.New("simulated"))()
 
 			out, code := captureStderr(t, func() int { return Run(tc.args) })
-			if code != ExitGeneral {
-				t.Fatalf("%s exit code = %d, want %d", tc.name, code, ExitGeneral)
+			if code != ExitOK {
+				t.Fatalf("%s exit code = %d, want %d", tc.name, code, ExitOK)
 			}
 			if !strings.Contains(out, tc.want) {
 				t.Errorf("%s does not report that the change took effect: %q", tc.name, out)
@@ -1717,5 +1717,43 @@ func TestStripOneTrailingNewline(t *testing.T) {
 		if got := stripOneTrailingNewline(in); got != want {
 			t.Errorf("stripOneTrailingNewline(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestNonDurableInitDoesNotBreakACommandChain pins the reason this
+// exit code exists. `passgo init && passgo add ...` used to abort at
+// init against a vault that had just been created, because a
+// committed-but-not-durable write exited non-zero.
+//
+// A shell's && proceeds only on zero, so nothing short of 0 restores
+// the chain: a distinct non-zero code for this condition would abort
+// it just the same. That is why the fix is the exit code and not a
+// new one.
+func TestNonDurableInitDoesNotBreakACommandChain(t *testing.T) {
+	withTempVault(t)
+
+	restore := vault.FailSyncDir(errors.New("simulated"))
+	out, code := captureStderr(t, func() int { return Run([]string{"init"}) })
+	restore()
+
+	if code != ExitOK {
+		t.Fatalf("init exit code = %d, want %d — a shell's && aborts on anything else", code, ExitOK)
+	}
+
+	// Exiting 0 must not mean saying nothing: the caveat moves to
+	// stderr, it does not disappear.
+	if !strings.Contains(out, "IMPORTANT") || !strings.Contains(out, "WAS created") {
+		t.Errorf("a non-durable init exited 0 without saying why: %q", out)
+	}
+	// And it must not call itself an error while reporting success.
+	if strings.Contains(out, "error:") {
+		t.Errorf("output labelled itself an error while exiting 0: %q", out)
+	}
+
+	// The half of the chain that used to be skipped now runs, which
+	// is the whole point.
+	withStdin(t, "s3cr3t\n")
+	if code := Run([]string{"add", "github.com", "-p"}); code != ExitOK {
+		t.Fatalf("the command after a non-durable init failed: exit = %d", code)
 	}
 }

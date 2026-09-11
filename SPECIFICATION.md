@@ -253,6 +253,16 @@ backwards. The outcome is therefore reported separately from the error, so that
 handling it is a condition of calling a write at all rather than something each
 caller has to remember.
 
+A command whose write committed MUST exit 0, whether or not it was durable, and
+MUST report the durability caveat on stderr. The change is installed and every
+read already sees it; only its survival of an immediate power loss is in doubt,
+and a write lost that way degrades to "the change did not happen", leaving the
+previous state intact and openable. No outcome here strands a user. Exiting
+non-zero breaks `passgo init && passgo add ...` against a vault that was in
+fact created, and a distinct non-zero code would break it identically, since a
+shell's `&&` tests only for zero. For the same reason such a command MUST NOT
+label its output an error, which would contradict the status it exits with.
+
 `init`'s no-overwrite guarantee (§6) is enforced the same way, but step 5 uses
 a create-only link instead of an unconditional rename: the temporary file is
 linked to the vault path rather than renamed over it, which fails atomically
@@ -579,6 +589,10 @@ they delete it (§3.4).
 | 3 | Ambiguous query — multiple entries matched |
 | 4 | No matching entry |
 | 5 | Authentication failed — wrong master password or corrupted ciphertext |
+
+A write that committed but could not be confirmed durable exits **0**, with the
+caveat on stderr — see §3.4. It is not given a code of its own: the harm it
+causes is to `&&` chains, which any non-zero code causes equally.
 
 Exit code 5 is distinct so scripts can tell "you typed it wrong" from "this
 entry does not exist." It is scoped specifically to a failed AEAD

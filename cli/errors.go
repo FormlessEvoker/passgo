@@ -50,11 +50,29 @@ func reportNotDurable(w io.Writer, happened string) {
 //
 // tookEffect names what did happen, in the command's own terms, and is
 // used only for the outcome where a write both failed and took effect.
+//
+// A committed-but-not-durable write exits 0, because the command did
+// what it was asked to do: the change is installed and every read
+// already sees it. Only its survival of an immediate power loss is in
+// doubt, and a write lost that way degrades to "the change did not
+// happen" — the previous state is intact and still opens, so no
+// outcome here strands anyone.
+//
+// Exiting non-zero broke `passgo init && passgo add ...` against a
+// vault that had just been created. A distinct non-zero code would
+// break it identically, since `&&` tests only for zero, so the choice
+// is between 0 and leaving that harm in place. The caveat goes to
+// stderr, where the tool's other advisories already go.
 func reportWrite(outcome vault.WriteOutcome, err error, tookEffect string) int {
-	fmt.Fprintln(os.Stderr, "error:", err)
 	if outcome == vault.WriteCommittedNotDurable {
+		// Not "error:". The exit code says this succeeded; calling it
+		// an error in the same breath would have the two channels
+		// contradict each other.
+		fmt.Fprintln(os.Stderr, "warning:", err)
 		reportNotDurable(os.Stderr, tookEffect)
+		return ExitOK
 	}
+	fmt.Fprintln(os.Stderr, "error:", err)
 	return ExitGeneral
 }
 

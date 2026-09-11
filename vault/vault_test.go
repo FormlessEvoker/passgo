@@ -430,3 +430,40 @@ func TestWriteAtomicNoOverwriteReportsCommittedButNotDurable(t *testing.T) {
 		t.Errorf("directory contains %v, want only vault.pgv", names)
 	}
 }
+
+// TestWriteOutcomeCommitted pins which outcomes count as committed.
+// Committed drives whether a generated secret is printed, whether a
+// Store's key is treated as superseded, and whether the stale-backup
+// warning fires, so a value this package never produced must not fall
+// on the committed side of it just by being non-zero.
+func TestWriteOutcomeCommitted(t *testing.T) {
+	cases := []struct {
+		outcome WriteOutcome
+		want    bool
+	}{
+		{WriteFailed, false},
+		{WriteCommitted, true},
+		{WriteCommittedNotDurable, true},
+		{WriteOutcome(42), false},
+		{WriteOutcome(-1), false},
+	}
+	for _, tc := range cases {
+		if got := tc.outcome.Committed(); got != tc.want {
+			t.Errorf("WriteOutcome(%d).Committed() = %v, want %v", int(tc.outcome), got, tc.want)
+		}
+	}
+}
+
+// TestWriteOutcomeStringRejectsUndefined keeps an undefined outcome
+// from printing as a real one: a test failure reporting "failed" for
+// a value that is not WriteFailed sends the reader after the wrong
+// bug.
+func TestWriteOutcomeStringRejectsUndefined(t *testing.T) {
+	if got := WriteFailed.String(); got != "failed" {
+		t.Errorf("WriteFailed.String() = %q, want %q", got, "failed")
+	}
+	got := WriteOutcome(42).String()
+	if !strings.Contains(got, "42") || !strings.Contains(got, "invalid") {
+		t.Errorf("WriteOutcome(42).String() = %q, want it to name itself invalid and show 42", got)
+	}
+}

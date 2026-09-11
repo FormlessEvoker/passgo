@@ -1,5 +1,7 @@
 package vault
 
+import "fmt"
+
 // WriteOutcome reports what a write did to the file on disk, which is
 // a separate question from whether the write returned an error.
 //
@@ -44,16 +46,31 @@ const (
 // whether the new contents are what readers now see. True for both
 // committed outcomes; the difference between them is durability, not
 // visibility.
-func (o WriteOutcome) Committed() bool { return o != WriteFailed }
+//
+// The two are named rather than tested against WriteFailed, so that a
+// value which is none of the three defined outcomes is not committed.
+// Callers use this to decide whether to print a generated secret,
+// whether a Store's key has been superseded, and whether a stale
+// backup exists to warn about; none of those should be driven by a
+// value this package never produced. A fourth outcome added later has
+// to be classified here deliberately, rather than defaulting into the
+// committed side by being merely non-zero.
+func (o WriteOutcome) Committed() bool {
+	return o == WriteCommitted || o == WriteCommittedNotDurable
+}
 
-// String renders the outcome for test failures and diagnostics.
+// String renders the outcome for test failures and diagnostics. An
+// undefined value is reported as such rather than borrowing the name
+// of a real outcome, which would hide the bug that produced it.
 func (o WriteOutcome) String() string {
 	switch o {
+	case WriteFailed:
+		return "failed"
 	case WriteCommitted:
 		return "committed"
 	case WriteCommittedNotDurable:
 		return "committed but not durable"
 	default:
-		return "failed"
+		return fmt.Sprintf("invalid WriteOutcome(%d)", int(o))
 	}
 }

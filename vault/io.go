@@ -52,7 +52,8 @@ var syncDir = fsyncDir
 //  1. write to a temp file in the same directory (same filesystem, so
 //     the rename is atomic), mode 0600;
 //  2. fsync the temp file;
-//  3. copy the current vault to path+".bak" if one exists;
+//  3. copy the current vault to path+".bak" if one exists, fsyncing
+//     that copy;
 //  4. rename the temp file over path;
 //  5. fsync the containing directory.
 //
@@ -189,12 +190,46 @@ func fsyncDir(dir string) error {
 	return d.Close()
 }
 
+// copyFile copies src to dst, making dst's contents durable before it
+// returns.
+//
+// The sync is not incidental. This is step 3 of §3.4 — the backup
+// taken immediately before the live vault is replaced — and after
+// `passwd` it is the user's only way back to the vault the previous
+// master password opens. os.WriteFile would leave those bytes in the
+// page cache: the step 5 directory fsync makes dst's *name* durable,
+// never its contents, so a crash could leave a backup that exists and
+// is empty while the new vault is already live.
+//
+// Because step 3 runs before the rename, a failure here is still a
+// pre-commit failure: the caller returns WriteFailed and the original
+// vault stands.
 func copyFile(src, dst string) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, vaultMode)
+
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, vaultMode)
+	if err != nil {
+		return err
+	}
+	// O_CREATE applies the mode only when it creates the file, and a
+	// .bak from an earlier run may already be sitting there under
+	// looser permissions. It holds a whole vault; set them regardless.
+	if err := f.Chmod(vaultMode); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // ResolvePath returns the vault file path, per SPECIFICATION.md §3.3:

@@ -177,6 +177,12 @@ func TestWriteAtomicRoundTrip(t *testing.T) {
 		t.Errorf("vault mode = %o, want %o", info.Mode().Perm(), vaultMode)
 	}
 
+	// A .bak from an earlier run, left group/other-readable. The
+	// backup about to overwrite it must not inherit those bits.
+	if err := os.WriteFile(path+".bak", []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	data2 := []byte("second version")
 	if _, err := WriteAtomic(path, data2); err != nil {
 		t.Fatal(err)
@@ -195,6 +201,15 @@ func TestWriteAtomicRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(bak, data1) {
 		t.Errorf(".bak contents = %q, want %q (the pre-write version)", bak, data1)
+	}
+	// The backup is a whole vault, so it carries the vault's mode —
+	// even when an earlier run left a .bak behind to be overwritten.
+	bakInfo, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bakInfo.Mode().Perm() != vaultMode {
+		t.Errorf(".bak mode = %o, want %o", bakInfo.Mode().Perm(), vaultMode)
 	}
 
 	// No leftover temp files.

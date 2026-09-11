@@ -221,7 +221,8 @@ Every write is atomic and never truncates the existing vault in place:
 2. Write to a temporary file in the *same directory* (same filesystem, so the
    rename is atomic), mode `0600`.
 3. `fsync` the temporary file.
-4. Copy the current vault to `vault.pgv.bak` if one exists.
+4. Copy the current vault to `vault.pgv.bak` if one exists, mode `0600`, and
+   `fsync` that copy.
 5. `rename` the temporary file over the vault.
 6. `fsync` the containing directory.
 
@@ -269,6 +270,15 @@ Step 4 leaves `vault.pgv.bak` holding the vault as it stood before the write,
 encrypted under whatever master password was in force at that moment. For
 `add`, `edit`, `mv`, and `rm` that is simply a previous version under the
 current password.
+
+The backup MUST be fsynced before the rename, not left to the step 6 directory
+fsync. That fsync makes the backup's *name* durable, never its contents: a
+crash between the two would leave a `vault.pgv.bak` that exists and is empty
+while the new vault is already live. Since the backup is the only way back to
+the vault the previous password opens, a backup that survives as an empty file
+is worse than none — it looks like a rollback and is not one. Failing to write
+or sync it MUST abort the write before the rename, leaving the original vault
+in place.
 
 After `passwd` it is not. The backup still opens with the password that was
 just replaced, so a rotation prompted by a suspected exposure has not ended

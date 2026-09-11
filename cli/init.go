@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/FormlessEvoker/passgo/store"
-	"github.com/FormlessEvoker/passgo/vault"
 )
 
 func runInit(vaultPath, passwordFile string, args []string) int {
@@ -24,16 +23,13 @@ func runInit(vaultPath, passwordFile string, args []string) int {
 		return ExitGeneral
 	}
 
-	if err := store.Init(vaultPath, password); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		if errors.Is(err, vault.ErrNotDurable) {
-			// os.Link committed before the sync failed, so a vault
-			// exists. Reporting a plain failure would leave someone
-			// believing there is none — and a re-run would then
-			// contradict that with "vault already exists".
-			reportNotDurable(os.Stderr, "the vault WAS created at "+vaultPath+" — do not re-run init.")
-		}
-		return ExitGeneral
+	// os.Link is the commit point, so a vault can exist even when this
+	// returns an error. Reporting a plain failure would leave someone
+	// believing there is none — and a re-run would then contradict
+	// that with "vault already exists".
+	outcome, err := store.Init(vaultPath, password)
+	if err != nil {
+		return reportWrite(outcome, err, "the vault WAS created at "+vaultPath+" — do not re-run init.")
 	}
 
 	fmt.Fprintln(os.Stderr, "vault created at", vaultPath)

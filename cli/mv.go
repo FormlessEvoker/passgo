@@ -59,9 +59,9 @@ func runMv(vaultPath, passwordFile string, args []string) int {
 	s.Payload.Entries[i].Name = newName
 	s.Payload.Entries[i].Updated = entry.Now()
 
-	if err := s.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return ExitGeneral
+	outcome, err := s.Save()
+	if err != nil {
+		return reportWrite(outcome, err, fmt.Sprintf("the entry WAS renamed to %q.", newName))
 	}
 	return ExitOK
 }

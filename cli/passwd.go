@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/FormlessEvoker/passgo/store"
-	"github.com/FormlessEvoker/passgo/vault"
 )
 
 // runPasswd implements `passgo passwd` per SPECIFICATION.md §6:
@@ -71,18 +70,18 @@ func runPasswd(vaultPath, passwordFile string, args []string) int {
 		return ExitUsage
 	}
 
-	if err := s.ChangePassword(newPassword); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		if errors.Is(err, vault.ErrNotDurable) {
-			// The rename committed before the failure, so the vault
-			// already requires the new password. Saying only "error"
-			// here would send the user back to a password that no
-			// longer opens their vault.
-			reportNotDurable(os.Stderr, "the master password WAS changed — use the new one from now on.")
-		}
-		return ExitGeneral
+	// The rename is the commit point, so the vault can already require
+	// the new password even when this returns an error. Saying only
+	// "error" would send the user back to a password that no longer
+	// opens their vault.
+	outcome, err := s.ChangePassword(newPassword)
+
+	code := ExitOK
+	if err != nil {
+		code = reportWrite(outcome, err, "the master password WAS changed — use the new one from now on.")
+	} else {
+		fmt.Fprintln(os.Stderr, "master password changed")
 	}
 
-	fmt.Fprintln(os.Stderr, "master password changed")
-	return ExitOK
+	return code
 }

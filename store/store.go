@@ -53,28 +53,26 @@ type Store struct {
 // rather than racing a stat check against a concurrent writer. The
 // stat here is just a fast path so a doomed `init` fails before
 // paying for a master-password prompt and an Argon2id derivation.
-func Init(path, password string) error {
+func Init(path, password string) (vault.WriteOutcome, error) {
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
+		return vault.WriteFailed, fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
 	} else if !os.IsNotExist(err) {
-		return err
+		return vault.WriteFailed, err
 	}
 
 	data, err := entry.Marshal(entry.New())
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 	fileBytes, err := vault.Create(password, data)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
-	if err := vault.WriteAtomicNoOverwrite(path, fileBytes); err != nil {
-		if os.IsExist(err) {
-			return fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
-		}
-		return err
+	outcome, err := vault.WriteAtomicNoOverwrite(path, fileBytes)
+	if os.IsExist(err) {
+		return outcome, fmt.Errorf("%w: vault already exists at %s", os.ErrExist, path)
 	}
-	return nil
+	return outcome, err
 }
 
 // Open decrypts the vault at path with password and parses its entries.
@@ -107,34 +105,33 @@ func (s *Store) Close() {
 // Save and ChangePassword end in exactly this sequence and differ
 // only in how they produce fileBytes, so the bookkeeping that keeps a
 // Store honest about the file lives here once. Splitting it between
-// the two is what previously let them disagree about ErrNotDurable:
-// past the rename that write *is* the file on disk, so rawBytes must
-// advance even though an error is returned. A Store that skipped it
-// would go on believing in a file it had already replaced, and report
-// a conflict against its own committed write.
+// the two is what previously let them disagree about a committed but
+// non-durable write: past the rename that write *is* the file on
+// disk, so rawBytes must advance even though an error is returned. A
+// Store that skipped it would go on believing in a file it had
+// already replaced, and report a conflict against its own write.
 //
 // The conflict check sits here rather than in the callers so that it
 // runs immediately before the write. ChangePassword derives a new key
 // first, which costs roughly half a second (§4) — time that would
 // otherwise sit between checking for a concurrent write and
 // performing one.
-func (s *Store) commit(fileBytes []byte) error {
+func (s *Store) commit(fileBytes []byte) (vault.WriteOutcome, error) {
 	current, err := os.ReadFile(s.path)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 	if !bytes.Equal(current, s.rawBytes) {
-		return ErrConflict
+		return vault.WriteFailed, ErrConflict
 	}
 
-	if err := vault.WriteAtomic(s.path, fileBytes); err != nil {
-		if errors.Is(err, vault.ErrNotDurable) {
-			s.rawBytes = fileBytes
-		}
-		return err
+	outcome, err := vault.WriteAtomic(s.path, fileBytes)
+	if outcome.Committed() {
+		// Past the rename this write is the file on disk, durable or
+		// not, so the snapshot advances on both committed outcomes.
+		s.rawBytes = fileBytes
 	}
-	s.rawBytes = fileBytes
-	return nil
+	return outcome, err
 }
 
 // Save re-encrypts s.Payload and atomically writes it back to the
@@ -143,18 +140,18 @@ func (s *Store) commit(fileBytes []byte) error {
 //
 // It refuses with ErrConflict if the file on disk no longer matches
 // what this Store read at Open (or last wrote) — see ErrConflict.
-func (s *Store) Save() error {
+func (s *Store) Save() (vault.WriteOutcome, error) {
 	if s.rekeyed {
-		return ErrRekeyed
+		return vault.WriteFailed, ErrRekeyed
 	}
 
 	data, err := entry.Marshal(s.Payload)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 	fileBytes, err := s.opened.Save(data)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 	return s.commit(fileBytes)
 }
@@ -170,26 +167,26 @@ func (s *Store) Save() error {
 //
 // It takes the same conflict check as Save and leaves the Store
 // spent: see ErrRekeyed.
-func (s *Store) ChangePassword(newPassword string) error {
+func (s *Store) ChangePassword(newPassword string) (vault.WriteOutcome, error) {
 	if s.rekeyed {
-		return ErrRekeyed
+		return vault.WriteFailed, ErrRekeyed
 	}
 
 	data, err := entry.Marshal(s.Payload)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 	fileBytes, err := vault.Create(newPassword, data)
 	if err != nil {
-		return err
+		return vault.WriteFailed, err
 	}
 
-	err = s.commit(fileBytes)
-	if err == nil || errors.Is(err, vault.ErrNotDurable) {
-		// Both outcomes are past the rename, so the vault already
-		// requires newPassword and this Store's key is superseded.
-		// A conflict, by contrast, wrote nothing.
+	outcome, err := s.commit(fileBytes)
+	if outcome.Committed() {
+		// Past the rename the vault already requires newPassword, so
+		// this Store's key is superseded whether or not the write was
+		// durable. A conflict, by contrast, wrote nothing.
 		s.rekeyed = true
 	}
-	return err
+	return outcome, err
 }

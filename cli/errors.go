@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/FormlessEvoker/passgo/crypto"
+	"github.com/FormlessEvoker/passgo/vault"
 )
 
 // handleOpenError prints err to stderr and returns the exit code for a
@@ -35,4 +36,24 @@ func reportNotDurable(w io.Writer, happened string) {
 	fmt.Fprintln(w, "Only the directory sync failed, so it may not survive an immediate power loss.")
 	fmt.Fprintln(w, "No command can show you this: the new state is already what every read sees.")
 	fmt.Fprintln(w, "To force it to disk, run `sync`, or make another change to the vault.")
+}
+
+// reportWrite turns the outcome of a vault write into what the user
+// is told and the code the process exits with. Every mutating command
+// routes its failures through here, so the distinction between a write
+// that changed nothing and one that changed everything is drawn once
+// rather than six times — the split that five rounds of review kept
+// finding re-implemented, differently, at each call site.
+//
+// It is called only when err is non-nil; a clean write has nothing to
+// report and each command says its own piece.
+//
+// tookEffect names what did happen, in the command's own terms, and is
+// used only for the outcome where a write both failed and took effect.
+func reportWrite(outcome vault.WriteOutcome, err error, tookEffect string) int {
+	fmt.Fprintln(os.Stderr, "error:", err)
+	if outcome == vault.WriteCommittedNotDurable {
+		reportNotDurable(os.Stderr, tookEffect)
+	}
+	return ExitGeneral
 }

@@ -74,16 +74,19 @@ func runEdit(vaultPath, passwordFile string, args []string) int {
 	}
 	e.Updated = entry.Now()
 
-	if err := s.Save(); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return ExitGeneral
-	}
+	outcome, err := s.Save()
 
 	// Same contract as `add -g`: a generated secret is printed so it
 	// can be piped somewhere on the spot, since nothing else in this
-	// run reveals it.
-	if flags.wantGen {
+	// run reveals it. That holds for a write that committed without
+	// being confirmed durable too — the new secret is already the one
+	// in the vault, and re-running `edit -g` would generate a third.
+	if outcome.Committed() && flags.wantGen {
 		printSecret(secret)
+	}
+
+	if err != nil {
+		return reportWrite(outcome, err, fmt.Sprintf("the changes to %q WERE saved.", e.Name))
 	}
 	return ExitOK
 }

@@ -13,7 +13,7 @@ import (
 func TestInitOpenSaveRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "vault.pgv")
 
-	if err := Init(path, "correct horse"); err != nil {
+	if _, err := Init(path, "correct horse"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -33,7 +33,7 @@ func TestInitOpenSaveRoundTrip(t *testing.T) {
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{
 		Name: "github.com", Username: "me@example.com", Secret: "s3cr3t", Updated: entry.Now(),
 	})
-	if err := s.Save(); err != nil {
+	if _, err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,11 +49,11 @@ func TestInitOpenSaveRoundTrip(t *testing.T) {
 
 func TestInitFailsIfVaultExists(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "pw"); err != nil {
+	if _, err := Init(path, "pw"); err != nil {
 		t.Fatal(err)
 	}
 
-	err := Init(path, "pw")
+	_, err := Init(path, "pw")
 	if err == nil {
 		t.Fatal("expected Init to fail when a vault already exists")
 	}
@@ -64,7 +64,7 @@ func TestInitFailsIfVaultExists(t *testing.T) {
 
 func TestOpenWrongPasswordFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "correct horse"); err != nil {
+	if _, err := Init(path, "correct horse"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Open(path, "wrong password"); err == nil {
@@ -74,7 +74,7 @@ func TestOpenWrongPasswordFails(t *testing.T) {
 
 func TestSaveDetectsConcurrentModification(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "pw"); err != nil {
+	if _, err := Init(path, "pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,14 +91,14 @@ func TestSaveDetectsConcurrentModification(t *testing.T) {
 
 	// s1 saves first...
 	s1.Payload.Entries = append(s1.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
-	if err := s1.Save(); err != nil {
+	if _, err := s1.Save(); err != nil {
 		t.Fatal(err)
 	}
 
 	// ...so s2's Save, still based on the original file, must be
 	// refused rather than silently discarding s1's entry.
 	s2.Payload.Entries = append(s2.Payload.Entries, entry.Entry{Name: "b.com", Secret: "2", Updated: entry.Now()})
-	err = s2.Save()
+	_, err = s2.Save()
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("s2.Save() after a concurrent write: err = %v, want ErrConflict", err)
 	}
@@ -116,7 +116,7 @@ func TestSaveDetectsConcurrentModification(t *testing.T) {
 
 func TestSaveSortsAndPersistsEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "pw"); err != nil {
+	if _, err := Init(path, "pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,7 +128,7 @@ func TestSaveSortsAndPersistsEntries(t *testing.T) {
 		{Name: "b.com", Secret: "1", Updated: entry.Now()},
 		{Name: "a.com", Secret: "2", Updated: entry.Now()},
 	}
-	if err := s.Save(); err != nil {
+	if _, err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -148,7 +148,7 @@ func TestSaveSortsAndPersistsEntries(t *testing.T) {
 
 func TestChangePasswordRotatesAndPreservesEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "old pw"); err != nil {
+	if _, err := Init(path, "old pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,10 +157,10 @@ func TestChangePasswordRotatesAndPreservesEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
-	if err := s.Save(); err != nil {
+	if _, err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ChangePassword("new pw"); err != nil {
+	if _, err := s.ChangePassword("new pw"); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -186,7 +186,7 @@ func TestChangePasswordRotatesAndPreservesEntries(t *testing.T) {
 // entry *and* change the password needed to discover that.
 func TestChangePasswordDetectsConcurrentModification(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "pw"); err != nil {
+	if _, err := Init(path, "pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,11 +202,11 @@ func TestChangePasswordDetectsConcurrentModification(t *testing.T) {
 	defer s2.Close()
 
 	s1.Payload.Entries = append(s1.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
-	if err := s1.Save(); err != nil {
+	if _, err := s1.Save(); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s2.ChangePassword("new pw"); !errors.Is(err, ErrConflict) {
+	if _, err := s2.ChangePassword("new pw"); !errors.Is(err, ErrConflict) {
 		t.Errorf("ChangePassword after a concurrent write: err = %v, want ErrConflict", err)
 	}
 
@@ -227,7 +227,7 @@ func TestChangePasswordDetectsConcurrentModification(t *testing.T) {
 // re-encrypt under the password the user just replaced.
 func TestSaveAfterChangePasswordIsRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "old pw"); err != nil {
+	if _, err := Init(path, "old pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -236,15 +236,15 @@ func TestSaveAfterChangePasswordIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.ChangePassword("new pw"); err != nil {
+	if _, err := s.ChangePassword("new pw"); err != nil {
 		t.Fatal(err)
 	}
 
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "late.com", Secret: "x", Updated: entry.Now()})
-	if err := s.Save(); !errors.Is(err, ErrRekeyed) {
+	if _, err := s.Save(); !errors.Is(err, ErrRekeyed) {
 		t.Errorf("Save() after ChangePassword: err = %v, want ErrRekeyed", err)
 	}
-	if err := s.ChangePassword("third pw"); !errors.Is(err, ErrRekeyed) {
+	if _, err := s.ChangePassword("third pw"); !errors.Is(err, ErrRekeyed) {
 		t.Errorf("second ChangePassword: err = %v, want ErrRekeyed", err)
 	}
 
@@ -272,7 +272,7 @@ func TestSaveAfterChangePasswordIsRefused(t *testing.T) {
 // works.
 func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "old pw"); err != nil {
+	if _, err := Init(path, "old pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -285,9 +285,16 @@ func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 	// The real write runs and commits; only the directory sync fails.
 	defer vault.FailSyncDir(errors.New("simulated"))()
 
-	err = s.ChangePassword("new pw")
+	outcome, err := s.ChangePassword("new pw")
 	if !errors.Is(err, vault.ErrNotDurable) {
 		t.Fatalf("ChangePassword: err = %v, want ErrNotDurable", err)
+	}
+	// The outcome, not the error, is what callers branch on.
+	if outcome != vault.WriteCommittedNotDurable {
+		t.Errorf("ChangePassword outcome = %v, want %v", outcome, vault.WriteCommittedNotDurable)
+	}
+	if !outcome.Committed() {
+		t.Error("outcome.Committed() = false for a write past the rename")
 	}
 
 	// The vault really does require the new password now.
@@ -302,7 +309,7 @@ func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 
 	// And the Store knows it is spent, so a later Save cannot
 	// re-encrypt under the password that was just replaced.
-	if saveErr := s.Save(); !errors.Is(saveErr, ErrRekeyed) {
+	if _, saveErr := s.Save(); !errors.Is(saveErr, ErrRekeyed) {
 		t.Errorf("Save() after a non-durable rotation: err = %v, want ErrRekeyed", saveErr)
 	}
 }
@@ -315,7 +322,7 @@ func TestChangePasswordRecordsANonDurableRotation(t *testing.T) {
 // with nobody, against its own write.
 func TestSaveAfterANonDurableWriteDoesNotConflictWithItself(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "vault.pgv")
-	if err := Init(path, "pw"); err != nil {
+	if _, err := Init(path, "pw"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -328,17 +335,24 @@ func TestSaveAfterANonDurableWriteDoesNotConflictWithItself(t *testing.T) {
 	// The first write commits, then reports a failed directory sync.
 	restore := vault.FailSyncDir(errors.New("simulated"))
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "a.com", Secret: "1", Updated: entry.Now()})
-	if err := s.Save(); !errors.Is(err, vault.ErrNotDurable) {
+	outcome, err := s.Save()
+	if !errors.Is(err, vault.ErrNotDurable) {
 		restore()
 		t.Fatalf("first Save: err = %v, want ErrNotDurable", err)
+	}
+	if outcome != vault.WriteCommittedNotDurable {
+		restore()
+		t.Fatalf("first Save outcome = %v, want %v", outcome, vault.WriteCommittedNotDurable)
 	}
 	restore()
 
 	// The same Store saving again must succeed. Before commit() was
 	// shared, this returned ErrConflict.
 	s.Payload.Entries = append(s.Payload.Entries, entry.Entry{Name: "b.com", Secret: "2", Updated: entry.Now()})
-	if err := s.Save(); err != nil {
+	if outcome, err := s.Save(); err != nil {
 		t.Fatalf("second Save after a non-durable first: err = %v, want nil", err)
+	} else if outcome != vault.WriteCommitted {
+		t.Errorf("second Save outcome = %v, want %v", outcome, vault.WriteCommitted)
 	}
 
 	reopened, err := Open(path, "pw")

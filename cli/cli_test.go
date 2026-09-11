@@ -92,6 +92,43 @@ func captureStdout(t *testing.T, fn func() int) (string, int) {
 	return buf.String(), code
 }
 
+// captureBoth redirects both streams for the duration of fn. Commands
+// that put a secret on stdout while reporting a problem on stderr need
+// both halves asserted in one run.
+func captureBoth(t *testing.T, fn func() int) (stdout, stderr string, code int) {
+	t.Helper()
+	ro, wo, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	re, we, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = wo, we
+
+	code = fn()
+
+	wo.Close()
+	we.Close()
+	os.Stdout, os.Stderr = origOut, origErr
+
+	read := func(f *os.File) string {
+		var buf strings.Builder
+		tmp := make([]byte, 4096)
+		for {
+			n, readErr := f.Read(tmp)
+			buf.Write(tmp[:n])
+			if readErr != nil {
+				break
+			}
+		}
+		return buf.String()
+	}
+	return read(ro), read(re), code
+}
+
 func TestInitCreatesVault(t *testing.T) {
 	path := withTempVault(t)
 	if code := Run([]string{"init"}); code != ExitOK {
@@ -1195,6 +1232,140 @@ func TestInitReportsANonDurableCreation(t *testing.T) {
 	// And the claim must be true.
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("vault is missing despite a committed link: %v", err)
+	}
+}
+
+// TestAddGenPrintsSecretOnANonDurableWrite covers the half of the
+// committed-write contract that is not a message. The entry reached
+// disk, so the generated secret is the one now stored — and nothing
+// else in this run reveals it, since `show` masks the field.
+// Withholding it would leave the user holding an entry whose password
+// they have never seen.
+func TestAddGenPrintsSecretOnANonDurableWrite(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"add", "github.com", "-u", "alice", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("add exit code = %d, want %d", code, ExitGeneral)
+	}
+	secret := strings.TrimSpace(out)
+	if secret == "" {
+		t.Fatal("generated secret was withheld for a write that committed")
+	}
+	if !strings.Contains(errOut, "WAS added") {
+		t.Errorf("stderr does not say the entry was added: %q", errOut)
+	}
+
+	// The printed secret has to be the stored one. Reading takes no
+	// write path, so the sync hook above does not interfere.
+	stored, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("entry is not in the vault despite a committed write: exit = %d", getCode)
+	}
+	if strings.TrimSpace(stored) != secret {
+		t.Errorf("printed secret %q is not the stored one %q", secret, strings.TrimSpace(stored))
+	}
+}
+
+// TestAddGenWithholdsSecretWhenNothingWasWritten is the other half: a
+// write that never reached its commit point stored nothing, so
+// printing a secret would be inventing one.
+func TestAddGenWithholdsSecretWhenNothingWasWritten(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; directory permissions would not be enforced")
+	}
+	withTempVault(t)
+	Run([]string{"init"})
+
+	// A real failure before the commit point: with the vault's
+	// directory unwritable, the temp file cannot be created.
+	dir := filepath.Dir(os.Getenv("PASSGO_VAULT"))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"add", "github.com", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("add exit code = %d, want %d", code, ExitGeneral)
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("printed a secret for a write that never happened: %q", out)
+	}
+	if strings.Contains(errOut, "IMPORTANT") {
+		t.Errorf("claimed a non-committing write took effect: %q", errOut)
+	}
+}
+
+func TestEditGenPrintsSecretOnANonDurableWrite(t *testing.T) {
+	withTempVault(t)
+	Run([]string{"init"})
+	withStdin(t, "the original\n")
+	Run([]string{"add", "github.com", "-p"})
+
+	defer vault.FailSyncDir(errors.New("simulated"))()
+
+	out, errOut, code := captureBoth(t, func() int {
+		return Run([]string{"edit", "github.com", "-g"})
+	})
+	if code != ExitGeneral {
+		t.Fatalf("edit exit code = %d, want %d", code, ExitGeneral)
+	}
+	secret := strings.TrimSpace(out)
+	if secret == "" || secret == "the original" {
+		t.Fatalf("generated secret was withheld for a write that committed: %q", secret)
+	}
+	if !strings.Contains(errOut, "WERE saved") {
+		t.Errorf("stderr does not say the changes were saved: %q", errOut)
+	}
+
+	stored, getCode := captureStdout(t, func() int { return Run([]string{"get", "github.com"}) })
+	if getCode != ExitOK {
+		t.Fatalf("get after a committed edit: exit = %d", getCode)
+	}
+	if strings.TrimSpace(stored) != secret {
+		t.Errorf("printed secret %q is not the stored one %q", secret, strings.TrimSpace(stored))
+	}
+}
+
+// TestMutatingCommandsReportANonDurableWrite covers the commands with
+// no secret to print. Each still has to say its change took effect,
+// since the rename committed before the sync failed.
+func TestMutatingCommandsReportANonDurableWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"mv", []string{"mv", "github.com", "gitlab.com"}, "WAS renamed"},
+		{"rm", []string{"rm", "github.com", "-f"}, "WAS deleted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempVault(t)
+			Run([]string{"init"})
+			withStdin(t, "s3cr3t\n")
+			Run([]string{"add", "github.com", "-p"})
+
+			defer vault.FailSyncDir(errors.New("simulated"))()
+
+			out, code := captureStderr(t, func() int { return Run(tc.args) })
+			if code != ExitGeneral {
+				t.Fatalf("%s exit code = %d, want %d", tc.name, code, ExitGeneral)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("%s does not report that the change took effect: %q", tc.name, out)
+			}
+			if !strings.Contains(out, "IMPORTANT") {
+				t.Errorf("%s omits the committed-write notice: %q", tc.name, out)
+			}
+		})
 	}
 }
 

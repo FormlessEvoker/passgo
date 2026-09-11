@@ -159,7 +159,7 @@ func TestWriteAtomicRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "sub", "vault.pgv")
 
 	data1 := []byte("first version")
-	if err := WriteAtomic(path, data1); err != nil {
+	if _, err := WriteAtomic(path, data1); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -178,7 +178,7 @@ func TestWriteAtomicRoundTrip(t *testing.T) {
 	}
 
 	data2 := []byte("second version")
-	if err := WriteAtomic(path, data2); err != nil {
+	if _, err := WriteAtomic(path, data2); err != nil {
 		t.Fatal(err)
 	}
 	got, err = os.ReadFile(path)
@@ -213,7 +213,7 @@ func TestWriteAtomicNoOverwriteRefusesExistingFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vault.pgv")
 
-	if err := WriteAtomicNoOverwrite(path, []byte("first")); err != nil {
+	if _, err := WriteAtomicNoOverwrite(path, []byte("first")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -224,7 +224,7 @@ func TestWriteAtomicNoOverwriteRefusesExistingFile(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "first")
 	}
 
-	err = WriteAtomicNoOverwrite(path, []byte("second"))
+	_, err = WriteAtomicNoOverwrite(path, []byte("second"))
 	if !os.IsExist(err) {
 		t.Errorf("WriteAtomicNoOverwrite over an existing file: err = %v, want an os.IsExist error", err)
 	}
@@ -341,9 +341,12 @@ func TestWriteAtomicReportsCommittedButNotDurable(t *testing.T) {
 	syncDir = func(string) error { return errors.New("simulated fsync failure") }
 	defer func() { syncDir = orig }()
 
-	err := WriteAtomic(path, []byte("replacement"))
+	outcome, err := WriteAtomic(path, []byte("replacement"))
 	if !errors.Is(err, ErrNotDurable) {
 		t.Fatalf("WriteAtomic with a failing dir sync: err = %v, want ErrNotDurable", err)
+	}
+	if outcome != WriteCommittedNotDurable {
+		t.Errorf("outcome = %v, want %v", outcome, WriteCommittedNotDurable)
 	}
 
 	// The whole point: despite the error, the new contents are live.
@@ -381,9 +384,12 @@ func TestWriteAtomicNoOverwriteReportsCommittedButNotDurable(t *testing.T) {
 	syncDir = func(string) error { return errors.New("simulated fsync failure") }
 	defer func() { syncDir = orig }()
 
-	err := WriteAtomicNoOverwrite(path, []byte("fresh vault"))
+	outcome, err := WriteAtomicNoOverwrite(path, []byte("fresh vault"))
 	if !errors.Is(err, ErrNotDurable) {
 		t.Fatalf("WriteAtomicNoOverwrite with a failing dir sync: err = %v, want ErrNotDurable", err)
+	}
+	if outcome != WriteCommittedNotDurable {
+		t.Errorf("outcome = %v, want %v", outcome, WriteCommittedNotDurable)
 	}
 
 	// The link committed, so the vault must exist with its contents.

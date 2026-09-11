@@ -243,6 +243,15 @@ everything did. Treating them alike would tell a user that a write failed when
 it had in fact taken effect — which for `passwd` means directing them back to a
 master password that no longer opens their vault.
 
+A write therefore has **three** outcomes, not two — *failed*, *committed*, and
+*committed but not durable* — and every caller MUST distinguish all three. The
+first two are the ordinary error and success; the third is both at once. An
+error value alone cannot carry this, because the near-universal reading of a
+non-nil error is "it did not happen", and for the third outcome that is exactly
+backwards. The outcome is therefore reported separately from the error, so that
+handling it is a condition of calling a write at all rather than something each
+caller has to remember.
+
 `init`'s no-overwrite guarantee (§6) is enforced the same way, but step 5 uses
 a create-only link instead of an unconditional rename: the temporary file is
 linked to the vault path rather than renamed over it, which fails atomically

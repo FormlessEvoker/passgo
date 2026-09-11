@@ -10,10 +10,10 @@ network access of any kind — the vault is a file, and you own it.
 
 ## Status
 
-Early development. The vault format is not yet stable; treat this as
-experimental and keep backups until v1.0. Breaking format changes are allowed
-before then and may land without a migration path — §3.5 of the specification
-sets out what that guarantees, and what changes at 1.0.
+Stable. As of v1.0.0 the vault format is frozen: a vault written by any
+released build stays readable by every later release, and a future format
+version ships with its migration in the same change. §3.5 of the
+[specification](docs/SPECIFICATION.md) sets out the full obligation.
 
 ## Why
 
@@ -32,11 +32,50 @@ fixes those three things.
 
 ## Install
 
+### Download a release binary
+
+Prebuilt binaries for macOS, Linux, and Windows are attached to every
+[release](https://github.com/FormlessEvoker/passgo/releases). Download the
+archive for your platform, verify it, and put `passgo` on your `PATH`:
+
+```sh
+tar -xzf passgo_1.0.0_darwin_arm64.tar.gz
+sudo install passgo /usr/local/bin/passgo
+```
+
+Each release also carries a `checksums.txt`. Verify before installing:
+
+```sh
+sha256sum --check --ignore-missing checksums.txt
+```
+
+On macOS, a binary downloaded through a browser is quarantined by Gatekeeper
+and will refuse to run. Clear the flag once:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/passgo
+```
+
+Downloading with `curl` avoids the quarantine flag entirely.
+
+### With the Go toolchain
+
 ```sh
 go install github.com/FormlessEvoker/passgo@latest
 ```
 
-Requires Go 1.26 or newer.
+This builds from source through the Go module proxy, with the module checksum
+database verifying what it fetched.
+
+### From source
+
+```sh
+git clone https://github.com/FormlessEvoker/passgo
+cd passgo
+make build
+```
+
+Both source paths require Go 1.26 or newer.
 
 ## Quickstart
 
@@ -47,7 +86,7 @@ passgo get github.com | pbcopy               # copy the password, print nothing
 ```
 
 Every command in the table below is implemented. Full semantics and exit codes
-are in [SPECIFICATION.md](SPECIFICATION.md).
+are in the [specification](docs/SPECIFICATION.md).
 
 ## Commands
 
@@ -73,8 +112,8 @@ and diagnostics always go to stderr, so redirecting stdout never mixes them in.
 Nothing else prints a secret: `show` redacts the password, and `ls` never reads
 one.
 
-Full command semantics, exit codes, and the vault format are in
-[SPECIFICATION.md](SPECIFICATION.md).
+Full command semantics, exit codes, and the vault format are in the
+[specification](docs/SPECIFICATION.md).
 
 ## Security
 
@@ -99,7 +138,7 @@ laptop, a backup drive, a cloud-synced directory, a misplaced USB stick.
 already running as you, it can log your keystrokes or read the decrypted vault
 out of memory, and no local password manager can prevent that.
 
-See the threat model in [SPECIFICATION.md](SPECIFICATION.md) for the full
+See the threat model in the [specification](docs/SPECIFICATION.md) for the full
 picture, including known limitations around clearing secrets from memory in Go.
 
 ## Dependencies
@@ -115,6 +154,12 @@ Both are maintained by the Go team. There are no third-party dependencies.
 
 Sync, sharing, browser extensions, TOTP codes, and team features are out of
 scope. This is a personal tool for one person on one machine.
+
+## Documentation
+
+- [Specification](docs/SPECIFICATION.md) — threat model, cryptography, vault
+  format, command semantics, exit codes.
+- [Releasing](docs/RELEASING.md) — how a version is cut and what ships with it.
 
 ## License
 

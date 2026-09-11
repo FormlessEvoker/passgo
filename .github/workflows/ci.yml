@@ -26,3 +26,29 @@ jobs:
 
       - name: Test
         run: make test
+
+  # A broken .goreleaser.yaml or a target that stopped cross-compiling
+  # should fail on the PR, not halfway through a release that has
+  # already pushed a tag and created a GitHub release.
+  release-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+
+      - name: Build all targets
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean

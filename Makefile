@@ -1,6 +1,6 @@
 BINARY := passgo
 
-.PHONY: build test vet fmt fmt-check ci clean
+.PHONY: build test vet fmt fmt-check ci snapshot release-check clean
 
 build:
 	go build -o $(BINARY) .
@@ -28,5 +28,14 @@ fmt-check:
 
 ci: build vet fmt-check test
 
+# Build every release target locally, exactly as CI does, without
+# tagging or publishing anything. Output lands in dist/.
+snapshot:
+	goreleaser release --snapshot --clean
+
+release-check:
+	goreleaser check
+
 clean:
 	rm -f $(BINARY)
+	rm -rf dist

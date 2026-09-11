@@ -5,6 +5,13 @@ name: Release
 # No matching label -> no release; this is opt-in per PR, not automatic
 # on every merge.
 #
+# The release is created here with GitHub's generated notes, then
+# GoReleaser attaches the cross-compiled archives and checksums.txt to
+# it (release.mode: append in .goreleaser.yaml). Both steps live in one
+# job on purpose: a tag pushed with GITHUB_TOKEN does not trigger other
+# workflows, so splitting the build out into a tag-triggered workflow
+# would need a PAT and buy nothing.
+#
 # Version is computed from the latest existing git tag (defaulting to
 # v0.0.0 if none exist) plus the label's semver bump. A tag with major
 # version 0 is published as a GitHub prerelease — standard semver
@@ -70,7 +77,7 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Tag and release
+      - name: Tag and create release
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT: ${{ steps.version.outputs.next }}
@@ -86,3 +93,19 @@ jobs:
           else
             gh release create "$NEXT" --title "$NEXT" --generate-notes
           fi
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Cross-compiles every target and uploads the archives and
+      # checksums.txt onto the release created above. The tag has to
+      # exist and be checked out before this runs, and it is: the step
+      # above created it and left HEAD on it.
+      - name: Build and upload release artifacts
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -1,0 +1,90 @@
+# GoReleaser builds the cross-compiled binaries, archives, and checksums
+# that `release.yml` publishes when a release:* labelled PR merges. The
+# tag already exists by the time this runs — release.yml creates it —
+# so this config never computes a version itself.
+#
+# Try changes locally without publishing anything:
+#   goreleaser release --snapshot --clean
+
+version: 2
+
+project_name: passgo
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: passgo
+    main: .
+    binary: passgo
+
+    # No cgo anywhere in the dependency tree — only x/crypto, x/term,
+    # and x/sys — so every target cross-compiles from the Linux runner
+    # with no toolchain of its own.
+    env:
+      - CGO_ENABLED=0
+
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+
+    # Windows on arm64 exists but has no meaningful user base for a
+    # terminal password manager; drop it rather than ship a binary
+    # nobody runs and everybody has to checksum.
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+    # -trimpath strips local filesystem paths from the binary so the
+    # build does not depend on where CI happened to check out. -s -w
+    # drop the symbol table and DWARF data, which are dead weight in a
+    # release artifact.
+    #
+    # The version stamp is the tag verbatim ("v1.0.0", not "1.0.0") so
+    # `passgo --version` reads the same as the git tag and the release
+    # page. See versionString in internal/cli/cli.go.
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/FormlessEvoker/passgo/internal/cli.version={{ .Tag }}
+
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: passgo
+    ids: [passgo]
+
+    # passgo_1.0.0_darwin_arm64.tar.gz — the README's install snippet
+    # quotes this shape, so changing it means changing the README.
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+    files:
+      - README.md
+      - LICENSE
+      - docs/SPECIFICATION.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # release.yml hands GoReleaser an existing tag and lets GitHub
+  # generate the notes from merged PRs, which is the same source the
+  # pre-GoReleaser releases used. Nothing to compute here.
+  disable: true
+
+release:
+  # release.yml has already created the GitHub release with generated
+  # notes; GoReleaser attaches artifacts to it rather than making its
+  # own.
+  mode: append
+  draft: false
